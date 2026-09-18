@@ -513,6 +513,34 @@ async def list_invoices(user: CurrentUser = Depends(get_current_user), status: O
     return {"invoices": clean_list(docs)}
 
 
+async def _invoice_pdf_bytes(invoice: dict) -> bytes:
+    from pdf import build_invoice_pdf
+    client = await db.users.find_one({"_id": ObjectId(invoice["client_id"])}, {"password_hash": 0}) or {}
+    business = None
+    if invoice.get("business_id"):
+        business = await db[COLL["businesses"]].find_one({"_id": ObjectId(invoice["business_id"])})
+    settings = await get_settings()
+    paid = invoice.get("status") == "paid"
+    payment = None
+    if invoice.get("payment_id"):
+        payment = await db[COLL["payments"]].find_one({"_id": ObjectId(invoice["payment_id"])})
+    elif invoice.get("request_id"):
+        payment = await db[COLL["payments"]].find_one({"request_id": invoice["request_id"], "status": "verified"}, sort=[("created_at", -1)])
+    return build_invoice_pdf(invoice, client, business, settings, paid, payment)
+
+
+@router.get("/client/invoices/{invoice_id}/pdf")
+async def client_invoice_pdf(invoice_id: str, user: CurrentUser = Depends(get_current_user)):
+    invoice = await db[COLL["invoices"]].find_one({"_id": ObjectId(invoice_id), "client_id": user.id})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    data = await _invoice_pdf_bytes(invoice)
+    kind = "Receipt" if invoice.get("status") == "paid" else "Invoice"
+    fname = f"taxman.manoj-{kind}-{invoice.get('number','')}.pdf"
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f"inline; filename=\"{fname}\""})
+
+
 # ---------------- notifications ----------------
 @router.get("/client/notifications")
 async def list_notifications(user: CurrentUser = Depends(get_current_user), unread: Optional[bool] = None):

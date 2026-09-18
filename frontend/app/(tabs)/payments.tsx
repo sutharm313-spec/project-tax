@@ -6,9 +6,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api } from "@/src/api";
+import { openAuthedFile } from "@/src/files";
 import { useI18n } from "@/src/i18n";
 import { UpiSheet } from "@/src/upi-sheet";
-import { Button, Card, EmptyState, ErrorState, SkeletonList, StatusBadge, useToast } from "@/src/ui";
+import { Button, Card, EmptyState, ErrorState, Icon, SkeletonList, StatusBadge, useToast } from "@/src/ui";
 import { makeStyles, radius, spacing, useTheme } from "@/src/theme";
 import { usesNativeTabs } from "@/src/navigation";
 
@@ -20,6 +21,7 @@ export default function Payments() {
   const { colors } = useTheme();
   const s = useStyles();
   const insets = useSafeAreaInsets();
+  const { show } = useToast();
   const [tab, setTab] = useState<"invoices" | "history">("invoices");
   const [payInvoice, setPayInvoice] = useState<string | null>(null);
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
@@ -62,9 +64,19 @@ export default function Payments() {
                     </View>
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                       <Text style={s.amount}>₹{inv.total.toLocaleString("en-IN")}</Text>
-                      {inv.status === "unpaid" || inv.status === "partial" ? (
-                        <Button label={t("pay_now")} icon="qr-code" onPress={() => setPayInvoice(inv.id)} testID={`pay-${inv.number}`} style={{ minWidth: 150 }} />
-                      ) : null}
+                      <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                        <Pressable
+                          onPress={() => openAuthedFile(`/client/invoices/${inv.id}/pdf`, `${inv.status === "paid" ? "Receipt" : "Invoice"}-${inv.number}.pdf`).catch(() => show("Could not open PDF", "error"))}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 6 }}
+                          testID={`invoice-pdf-${inv.number}`}
+                        >
+                          <Icon name="document-text" size={16} color={colors.brand} />
+                          <Text style={{ color: colors.brand, fontWeight: "700", fontSize: 12.5 }}>{inv.status === "paid" ? "Receipt" : "PDF"}</Text>
+                        </Pressable>
+                        {inv.status === "unpaid" || inv.status === "partial" ? (
+                          <Button label={t("pay_now")} icon="qr-code" onPress={() => setPayInvoice(inv.id)} testID={`pay-${inv.number}`} style={{ minWidth: 120 }} />
+                        ) : null}
+                      </View>
                     </View>
                   </Card>
                 </Animated.View>

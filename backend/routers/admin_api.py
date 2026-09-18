@@ -799,3 +799,211 @@ async def update_settings(body: SettingsIn, user: CurrentUser = Depends(require_
     await db[COLL["settings"]].update_one({"_id": "settings"}, {"$set": updates}, upsert=True)
     await audit(user.id, user.role, "settings_update", "settings", updates)
     return {"settings": clean(await get_settings())}
+
+
+# ---------------- invoice / receipt PDF (staff) ----------------
+@router.get("/invoices/{invoice_id}/pdf")
+async def admin_invoice_pdf(invoice_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_payments")
+    from routers.client_api import _invoice_pdf_bytes
+    invoice = await db[COLL["invoices"]].find_one({"_id": ObjectId(invoice_id)})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    data = await _invoice_pdf_bytes(invoice)
+    kind = "Receipt" if invoice.get("status") == "paid" else "Invoice"
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f"inline; filename=\"taxman.manoj-{kind}-{invoice.get('number','')}.pdf\""})
+
+
+# ---------------- recurring services ----------------
+def _advance(date_str: str, freq: str) -> str:
+    from datetime import date
+    y, m, d = [int(x) for x in date_str[:10].split("-")]
+    step = {"monthly": 1, "quarterly": 3, "annual": 12}.get(freq, 1)
+    m += step
+    while m > 12:
+        m -= 12; y += 1
+    dd = min(d, [31, 29 if y % 4 == 0 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1])
+    return date(y, m, dd).isoformat()
+
+
+class RecurringIn(BaseModel):
+    client_id: str
+    business_id: str
+    service_id: str
+    fy: str
+    frequency: str  # monthly | quarterly | annual
+    amount: int
+    next_due: str  # YYYY-MM-DD
+    assigned_staff_id: Optional[str] = None
+
+
+@router.get("/recurring")
+async def list_recurring(user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    docs = await db[COLL["recurring"]].find({}).sort("next_due", 1).to_list(300)
+    out = []
+    for r in docs:
+        item = clean(r)
+        cl = await db.users.find_one({"_id": ObjectId(r["client_id"])}, {"name": 1, "client_code": 1})
+        item["client"] = {"name": (cl or {}).get("name"), "client_code": (cl or {}).get("client_code")} if cl else None
+        out.append(item)
+    return {"recurring": out}
+
+
+@router.post("/recurring")
+async def create_recurring(body: RecurringIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    if body.frequency not in ("monthly", "quarterly", "annual"):
+        raise HTTPException(status_code=400, detail="Invalid frequency")
+    if body.fy not in FY_LIST:
+        raise HTTPException(status_code=400, detail="Invalid financial year")
+    svc = await db[COLL["catalog"]].find_one({"_id": ObjectId(body.service_id)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    # ensure a client price exists for this service+fy so auto-created requests are payable
+    ay = ay_for_fy(body.fy)
+    existing_price = await db[COLL["client_prices"]].find_one({"client_id": body.client_id, "service_id": body.service_id, "fy": body.fy, "ay": ay})
+    if not existing_price:
+        await db[COLL["client_prices"]].insert_one({"client_id": body.client_id, "service_id": body.service_id, "service_name": svc["name"],
+            "category": svc["category"], "fy": body.fy, "ay": ay, "amount": int(body.amount), "active": True,
+            "history": [{"action": "recurring_set", "amount": int(body.amount), "active": True, "at": now(), "by": user.id, "by_name": user.name}],
+            "created_by": user.id, "created_by_name": user.name, "created_at": now(), "updated_at": now()})
+    plan = {"client_id": body.client_id, "business_id": body.business_id, "service_id": body.service_id,
+            "service_name": svc["name"], "category": svc["category"], "fy": body.fy, "ay": ay,
+            "frequency": body.frequency, "amount": int(body.amount), "next_due": body.next_due[:10],
+            "assigned_staff_id": body.assigned_staff_id, "active": True, "runs": 0,
+            "created_by": user.id, "created_at": now()}
+    res = await db[COLL["recurring"]].insert_one(plan)
+    plan["_id"] = res.inserted_id
+    await audit(user.id, user.role, "recurring_created", f"client:{body.client_id}", {"service": svc["name"], "frequency": body.frequency})
+    return {"recurring": clean(plan)}
+
+
+class RecurringEditIn(BaseModel):
+    active: Optional[bool] = None
+    amount: Optional[int] = None
+    next_due: Optional[str] = None
+
+
+@router.put("/recurring/{plan_id}")
+async def edit_recurring(plan_id: str, body: RecurringEditIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    updates = {k: (v[:10] if k == "next_due" and isinstance(v, str) else v) for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    await db[COLL["recurring"]].update_one({"_id": ObjectId(plan_id)}, {"$set": updates})
+    await audit(user.id, user.role, "recurring_updated", f"recurring:{plan_id}", updates)
+    doc = await db[COLL["recurring"]].find_one({"_id": ObjectId(plan_id)})
+    return {"recurring": clean(doc)}
+
+
+async def run_recurring(actor_id: str = "system", actor_role: str = "system") -> int:
+    """Create service requests + invoices for any recurring plan that is due."""
+    from datetime import date
+    today = date.today().isoformat()
+    created = 0
+    async for plan in db[COLL["recurring"]].find({"active": True, "next_due": {"$lte": today}}):
+        svc = await db[COLL["catalog"]].find_one({"_id": ObjectId(plan["service_id"])})
+        if not svc:
+            continue
+        amount = int(plan["amount"])
+        req = {"client_id": plan["client_id"], "business_id": plan["business_id"], "fy": plan["fy"], "ay": plan.get("ay"),
+               "service_id": plan["service_id"], "service_name": plan["service_name"], "category": plan["category"],
+               "price": amount, "status": "payment_pending", "payment_status": "pending", "recurring_id": str(plan["_id"]),
+               "checklist": [{"key": c["key"], "name": c["name"], "required": c.get("required", True),
+                              "instructions": c.get("instructions", ""), "status": "required", "document_id": None}
+                             for c in svc.get("required_docs", [])],
+               "timeline": [{"step": "requested", "at": now()}], "workspace": {},
+               "assigned_staff_id": plan.get("assigned_staff_id"), "notes": "Auto-created recurring service", "created_at": now()}
+        res = await db[COLL["requests"]].insert_one(req)
+        await create_invoice(plan["client_id"], str(res.inserted_id), plan["service_name"],
+                             f"{plan['service_name']} — {plan['fy']} ({plan.get('ay','')}) · recurring", amount, plan["business_id"])
+        await db[COLL["recurring"]].update_one({"_id": plan["_id"]}, {"$set": {"next_due": _advance(plan["next_due"], plan["frequency"]), "last_run": now()}, "$inc": {"runs": 1}})
+        await notify(plan["client_id"], "New recurring service", f"{plan['service_name']} for {plan['fy']} is ready. Upload documents and complete payment.", "info", {"request_id": str(res.inserted_id)})
+        created += 1
+    return created
+
+
+@router.post("/recurring/run")
+async def run_recurring_route(user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    n = await run_recurring(user.id, user.role)
+    await audit(user.id, user.role, "recurring_run", "recurring", {"created": n})
+    return {"ok": True, "created": n}
+
+
+# ---------------- deadlines + reminders + document expiry ----------------
+class DeadlineIn(BaseModel):
+    title: str
+    due_date: str  # YYYY-MM-DD
+    kind: str = "compliance"
+    client_id: Optional[str] = None
+    business_id: Optional[str] = None
+    is_expiry: bool = False
+
+
+@router.get("/deadlines")
+async def list_deadlines(user: CurrentUser = Depends(require_staff)):
+    docs = await db[COLL["deadlines"]].find({"deleted_at": {"$exists": False}}).sort("due_date", 1).to_list(500)
+    out = []
+    for d in docs:
+        item = clean(d)
+        if d.get("client_id"):
+            cl = await db.users.find_one({"_id": ObjectId(d["client_id"])}, {"name": 1, "client_code": 1})
+            item["client"] = {"name": (cl or {}).get("name"), "client_code": (cl or {}).get("client_code")} if cl else None
+        out.append(item)
+    return {"deadlines": out}
+
+
+@router.post("/deadlines")
+async def create_deadline(body: DeadlineIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    d = {"title": body.title.strip(), "due_date": body.due_date[:10], "kind": body.kind,
+         "client_id": body.client_id or None, "business_id": body.business_id or None,
+         "is_expiry": body.is_expiry, "reminded_at": None, "created_at": now()}
+    res = await db[COLL["deadlines"]].insert_one(d)
+    d["_id"] = res.inserted_id
+    await audit(user.id, user.role, "deadline_created", "deadline", {"title": body.title, "due": body.due_date})
+    return {"deadline": clean(d)}
+
+
+@router.delete("/deadlines/{deadline_id}")
+async def delete_deadline(deadline_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    await db[COLL["deadlines"]].update_one({"_id": ObjectId(deadline_id)}, {"$set": {"deleted_at": now()}})
+    return {"ok": True}
+
+
+async def run_deadline_reminders() -> int:
+    """Notify clients + staff for deadlines/expiries falling within the reminder
+    window. Each deadline is reminded at most once per day."""
+    from datetime import date, timedelta as td
+    settings = await get_settings()
+    window = int(settings.get("expiry_reminder_days") or 30)
+    today = date.today()
+    horizon = (today + td(days=window)).isoformat()
+    today_s = today.isoformat()
+    staff_users = await db.users.find({"role": {"$in": ["super_admin", "admin", "manager"]}}).to_list(20)
+    sent = 0
+    async for d in db[COLL["deadlines"]].find({"due_date": {"$lte": horizon, "$gte": today_s}, "deleted_at": {"$exists": False}}):
+        last = d.get("reminded_at")
+        if last and str(last)[:10] == today_s:
+            continue
+        title = d.get("title", "Deadline")
+        due = d.get("due_date", "")
+        kind = "Expiry" if d.get("is_expiry") else "Deadline"
+        if d.get("client_id"):
+            await notify(d["client_id"], f"{kind} approaching", f"{title} is due on {due}. Please act in time.", "warning", {"deadline_id": str(d["_id"])})
+        for s in staff_users:
+            await notify(str(s["_id"]), f"{kind} approaching", f"{title} due {due}" + (" (client-specific)" if d.get("client_id") else ""), "warning", {"deadline_id": str(d["_id"])})
+        await db[COLL["deadlines"]].update_one({"_id": d["_id"]}, {"$set": {"reminded_at": now()}})
+        sent += 1
+    return sent
+
+
+@router.post("/deadlines/run-reminders")
+async def run_reminders_route(user: CurrentUser = Depends(require_staff)):
+    n = await run_deadline_reminders()
+    await audit(user.id, user.role, "reminders_run", "deadlines", {"sent": n})
+    return {"ok": True, "reminders_sent": n}

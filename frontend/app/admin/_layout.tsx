@@ -19,6 +19,9 @@ const NAV = [
   { route: "/admin/leads", label: "CRM Leads", icon: "trending-up" },
   { route: "/admin/tickets", label: "Tickets", icon: "headset" },
   { route: "/admin/catalog", label: "Catalog", icon: "pricetags" },
+  { route: "/admin/pricing", label: "Bulk Pricing", icon: "cash" },
+  { route: "/admin/recurring", label: "Recurring", icon: "repeat" },
+  { route: "/admin/deadlines", label: "Deadlines", icon: "alarm" },
   { route: "/admin/staff", label: "Staff", icon: "shield" },
   { route: "/admin/settings", label: "Settings", icon: "settings" },
 ];

@@ -49,6 +49,17 @@ async def startup():
     await db[COLL["tickets"]].create_index("client_id")
     await db[COLL["ticket_messages"]].create_index("ticket_id")
     await seed_if_empty()
+    await db[COLL["client_prices"]].create_index([("client_id", 1), ("service_id", 1), ("fy", 1), ("ay", 1)])
+    await db[COLL["recurring"]].create_index("next_due")
+    await db[COLL["deadlines"]].create_index("due_date")
+    # Lazy scheduler: run recurring service generation + deadline reminders on boot.
+    try:
+        from routers.admin_api import run_recurring, run_deadline_reminders
+        created = await run_recurring()
+        sent = await run_deadline_reminders()
+        logger.info("scheduler: %s recurring created, %s reminders sent", created, sent)
+    except Exception as e:  # never block startup
+        logger.warning("scheduler run skipped: %s", e)
     logger.info("taxman.manoj backend ready")
 
 

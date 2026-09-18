@@ -1,0 +1,44 @@
+{
+  "summary": "Backend coverage for iteration 3 (PDF invoices/receipts, recurring services, bulk pricing, deadlines + reminders, RBAC, regression). 21/22 tests PASS in tests/test_iteration3_features.py. Verified: (A) Client GET /api/client/invoices/{id}/pdf returns application/pdf starting with %PDF; unpaid PDF filename Content-Disposition contains 'Invoice', paid contains 'Receipt'; a second client gets 404 on another client's invoice PDF. (B) Admin GET /api/admin/invoices/{id}/pdf returns application/pdf for staff (accountant has manage_payments); plain client token gets 403. (C) POST /api/admin/recurring creates a monthly plan with correct AY derivation, auto-creates a client_price when none exists (verified via /client/price -> assigned=true, amount matches). Invalid frequency -> 400, invalid FY -> 400. (D) POST /api/admin/recurring/run creates a service_request (payment_status='pending', price==plan amount) + matching unpaid invoice (invoice.total==amount) for plans with next_due<=today, advances next_due (monthly=+1 month), increments runs, sets last_run. (E) PUT /api/admin/recurring/{id} {active:false} pauses; paused plan is skipped by run (next_due does not advance). GET /api/admin/recurring returns plans enriched with client {name, client_code}. (F) POST /api/admin/prices/bulk creates/updates client_price rows for all client_ids (returns updated count); both clients' GET /api/client/price returns assigned=true with amount. (G) POST /api/admin/deadlines creates client-specific + generic expiry deadlines; GET lists them with client info. POST /api/admin/deadlines/run-reminders notifies the client for a client-specific deadline within the window; running again same day does NOT duplicate the reminder (reminded_at guard verified). (H) RBAC: plain client token -> 403 on GET/POST /api/admin/recurring, /api/admin/recurring/run, /api/admin/deadlines, /api/admin/deadlines/run-reminders, /api/admin/prices/bulk, /api/admin/invoices/{id}/pdf. Staff (accountant, lacks manage_services) -> 403 on POST /api/admin/recurring and POST /api/admin/deadlines. (I) Regression: create_request returns 402 'Price not assigned' when no client_price exists; end-to-end UPI (initiate -> submit 12-digit UTR -> admin status=received) still unlocks document access (file_token issued). One backend bug found: DELETE /api/admin/deadlines/{id} sets deleted_at but subsequent GET /api/admin/deadlines still returns the soft-deleted item — the list endpoint does NOT filter by deleted_at.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/admin/deadlines (routers/admin_api.py:947-956)",
+        "issue": "List query is find({}) — does not exclude soft-deleted rows (deleted_at set). Iteration-3 spec explicitly requires soft-deleted deadlines to no longer be listed. DELETE endpoint correctly writes deleted_at (line 974) but list() ignores it. Fix: change find filter to {\"deleted_at\": {\"$exists\": False}} (same pattern already used by run_deadline_reminders on line 989).",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3_features.py",
+    "/app/test_reports/pytest/iteration3_results.xml"
+  ],
+  "action_items": [
+    "FIX: /app/backend/routers/admin_api.py list_deadlines (line 948) — filter out soft-deleted docs. Replace `db[COLL[\"deadlines\"]].find({})` with `db[COLL[\"deadlines\"]].find({\"deleted_at\": {\"$exists\": False}})`. After fix, re-run pytest tests/test_iteration3_features.py::TestDeadlines::test_soft_delete_deadline to confirm 22/22 pass.",
+    "Optional: also filter deleted_at out of any admin reports that iterate deadlines (routers/admin_api.py:758 report_deadlines) to keep behavior consistent."
+  ],
+  "critical_code_review_comments": [
+    "Recurring auto-price creation is clean: when creating a plan, if no client_price exists for (client, service, fy, ay), one is inserted with a 'recurring_set' history entry using plan amount — this guarantees the auto-generated request is payable (no 402 loops). Verified via GET /client/price after POST /admin/recurring.",
+    "run_recurring() correctly writes payment_status='pending' + price=plan.amount on the request and calls create_invoice with the same amount, then advances next_due via _advance() (+1/+3/+12 months, clamped to month-end) and $inc: {runs:1}. Uses find cursor + update in-place — safe for small volumes; for scale, consider a status flag to avoid double-run on concurrent scheduler triggers.",
+    "run_deadline_reminders() properly filters by deleted_at, uses the reminded_at same-day guard for idempotency, and notifies both the client (if client-specific) and all admin/manager staff. Confirmed no duplicates on 2nd run same day.",
+    "PDF endpoints: client_invoice_pdf ownership filter is `_id + client_id`, so cross-tenant returns 404 (verified). Admin PDF is gated by require_perm(manage_payments) — plain client 403 verified. Filename Content-Disposition uses 'Receipt' for status=paid, 'Invoice' otherwise — verified both paths.",
+    "BulkPriceIn does not validate that client_ids exist (missing existence check per cid). Currently it will happily insert a client_prices row for a bogus client_id. Consider adding a users.find_one existence guard per cid before insert to prevent orphan pricing rows. Non-blocking for iter3 spec.",
+    "Recurring GET /admin/recurring is gated by require_perm(manage_services), but the top-level require_staff dependency will still return 403 first for a plain client — verified. Consistent with rest of admin router."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3_features.py"
+  ],
+  "success_rate": {"backend": "95.5% (21/22)", "frontend": "not tested"},
+  "seed_data_creation": "Created ephemeral: one recurring plan (Bank Reconciliation FY 2024-25, monthly, ₹777, next_due=yesterday) for demo client — auto-created a client_price row; two deadlines (one client-specific GST filing, one generic DSC expiry — expiry one soft-deleted); one bulk-price row (Financial Statements FY 2027-28, ₹4321) for demo client + a throwaway client B; one throwaway registered client (iso3_<uuid>@taxman.dev) used for isolation tests; one paid ITR request for demo client via UPI flow (used for doc unlock regression). No seeded/production data deleted; recurring plan left paused after test.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration-3 suite lives at /app/backend/tests/test_iteration3_features.py — run with `pytest tests/test_iteration3_features.py -v`. FY_LIST is fixed to ['FY 2024-25','FY 2025-26','FY 2026-27','FY 2027-28'] (see common.py); tests using out-of-range FY get 400 not 402/404. Bank Reconciliation FY 2025-26 is a reliable 'unpriced' canary for 402 assertions (Bank Reconciliation FY 2024-25 is now priced due to recurring auto-price seeded by these tests). run_recurring on startup may have advanced other plans and created invoices, so tests assert deltas (before/after unpaid-invoice set) rather than absolute counts. Staff account (accountant) has manage_payments but NOT manage_services — used for asserting split RBAC on recurring/deadlines vs PDF/bulk-pricing.",
+  "rca_of_issue": "Soft-delete bug RCA: routers/admin_api.py::list_deadlines (line 948) uses `db[COLL['deadlines']].find({})` with no filter. The DELETE handler at line 974 properly sets deleted_at, but the LIST handler ignores it, so soft-deleted rows continue to surface in the admin UI/list API. Reproduction: (1) POST /api/admin/deadlines -> capture id; (2) DELETE /api/admin/deadlines/{id} -> 200; (3) GET /api/admin/deadlines -> id still appears. Fix: add `{\"deleted_at\": {\"$exists\": False}}` to the find query (mirror the pattern already correct in run_deadline_reminders at line 989)."
+}

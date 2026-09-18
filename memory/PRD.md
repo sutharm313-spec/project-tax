@@ -43,6 +43,13 @@ Production-ready premium mobile-first client portal + secure web-based Admin/Sta
 - UPI QR manual verification (no Razorpay): client sees QR + private amount, submits 12-digit UTR + optional payment screenshot (private GridFS). Status: Awaiting → Under Verification. Admin sets Payment Received / Under Verification / Payment Not Received; only "Received" unlocks that specific request's (one service + FY/AY) documents; flip re-locks. Payment history/audit + admin screenshot viewer via signed gridfile token.
 - Verified end-to-end by testing agent: 21/21 pricing+UPI tests passed (public price hidden, price gating, snapshot immutability, UPI flow, screenshot, status unlock/re-lock, FY/AY scoping, RBAC, isolation, legacy /verify compat).
 
+## Implemented (2026-09-18c) — PDF invoices, Recurring, Bulk pricing, Deadline reminders
+- Branded PDF invoice/receipt (reportlab): client GET /client/invoices/{id}/pdf + admin /admin/invoices/{id}/pdf; unpaid=Invoice, paid=Receipt with PAID watermark; cross-tenant blocked. Client payments screen has PDF/Receipt buttons (openAuthedFile: web blob, native share).
+- Recurring services: admin plans (client+business+service+FY+frequency+amount+next_due) auto-create request+invoice each period; scheduler runs on startup + POST /admin/recurring/run; next_due advances; pause/resume. Admin screen /admin/recurring. Auto-creates client_price if missing so auto requests are payable.
+- Bulk pricing: /admin/pricing screen sets one service's price across many selected clients+FY via /admin/prices/bulk.
+- Deadlines & document-expiry: /admin/deadlines screen create/list/soft-delete; POST /admin/deadlines/run-reminders (also on startup) notifies client + staff within reminder window (once/day). 
+- Verified by testing agent: 22/22 (fixed soft-deleted deadlines still listed).
+
 ## Backlog- P1: PDF invoice/receipt generation (currently CSV reports + on-screen invoices); document expiry reminders scheduler; recurring service auto-creation.
 - P1: real Razorpay/WhatsApp Cloud API/OCR wiring when user provides credentials (architecture + env placeholders ready).
 - P2: dedicated GST/Audit/TDS structured workspaces (basic notes/workspace JSON in place); push notifications (on request); 2FA.
