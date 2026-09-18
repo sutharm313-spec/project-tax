@@ -92,4 +92,5 @@ COLL = {
     "wa_log": "whatsapp_messages",
     "email_log": "email_messages",
     "deadlines": "deadlines",
+    "client_prices": "client_prices",
 }

@@ -13,9 +13,10 @@ import { Button, Card, EmptyState, Icon, Skeleton, StatusBadge, useToast } from 
 import { makeStyles, radius, spacing, useTheme } from "@/src/theme";
 
 type Service = {
-  id: string; name: string; category: string; description: string; price: number;
+  id: string; name: string; category: string; description: string;
   estimated_days: number; required_docs: { key: string; name: string; required: boolean }[];
 };
+type PriceInfo = { assigned: boolean; amount: number | null; fy: string; ay: string; currency: string };
 
 const STEPS = ["step_upload", "step_pay", "step_verify", "step_work"];
 
@@ -34,6 +35,12 @@ export default function ServiceDetail() {
   const { data, isLoading, isError } = useQuery<{ service: Service }>({
     queryKey: ["catalog", id],
     queryFn: () => api(`/catalog/${id}`),
+  });
+
+  const { data: priceData, isLoading: priceLoading } = useQuery<PriceInfo>({
+    queryKey: ["client-price", id, fy],
+    queryFn: () => api(`/client/price?service_id=${id}&fy=${encodeURIComponent(fy)}`),
+    enabled: !!id && !!fy,
   });
 
   const request = useMutation({
@@ -64,6 +71,9 @@ export default function ServiceDetail() {
   }
 
   const svc = data.service;
+  const assigned = priceData?.assigned;
+  const amount = priceData?.amount ?? null;
+  const priceText = assigned && amount != null ? `₹${amount.toLocaleString("en-IN")}` : t("price_not_assigned");
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
@@ -82,8 +92,17 @@ export default function ServiceDetail() {
                 <Text style={s.name}>{svc.name}</Text>
                 <Text style={{ color: colors.muted, fontSize: 12, textTransform: "capitalize" }}>{svc.category.replace(/_/g, " ")}</Text>
               </View>
-              <View style={s.priceBox}>
-                <Text style={{ color: colors.onBrandPrimary, fontWeight: "800", fontSize: 18 }}>₹{svc.price.toLocaleString("en-IN")}</Text>
+              <View style={[s.priceBox, !assigned && { backgroundColor: colors.surfaceTertiary, borderWidth: 1, borderColor: colors.border }]} testID="service-price-box">
+                {priceLoading ? (
+                  <Skeleton width={70} height={20} />
+                ) : assigned ? (
+                  <Text style={{ color: colors.onBrandPrimary, fontWeight: "800", fontSize: 18 }}>₹{amount!.toLocaleString("en-IN")}</Text>
+                ) : (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                    <Icon name="lock-closed" size={13} color={colors.muted} />
+                    <Text style={{ color: colors.muted, fontWeight: "700", fontSize: 12 }}>{t("private_price")}</Text>
+                  </View>
+                )}
               </View>
             </View>
             <Text style={{ color: colors.onSurfaceSecondary, fontSize: 13.5, lineHeight: 20 }}>{svc.description}</Text>
@@ -98,7 +117,7 @@ export default function ServiceDetail() {
               </View>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <Icon name="calendar" size={14} color={colors.muted} />
-                <Text style={{ color: colors.muted, fontSize: 12 }}>{fy}</Text>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>{fy}{priceData?.ay ? ` · ${priceData.ay}` : ""}</Text>
               </View>
             </View>
           </Card>
@@ -138,8 +157,17 @@ export default function ServiceDetail() {
       </ScrollView>
 
       <View style={[s.ctaWrap, { bottom: insets.bottom + 16 }]}>
-        <Button label={`${t("request_service")} · ₹${svc.price.toLocaleString("en-IN")}`} icon="arrow-forward" loading={request.isPending || busy} onPress={() => request.mutate()} testID="request-service-btn" />
-        <Text style={{ color: colors.muted, fontSize: 11.5, textAlign: "center" }}>Documents can be uploaded before payment</Text>
+        {assigned ? (
+          <>
+            <Button label={`${t("request_service")} · ${priceText}`} icon="arrow-forward" loading={request.isPending || busy} onPress={() => request.mutate()} testID="request-service-btn" />
+            <Text style={{ color: colors.muted, fontSize: 11.5, textAlign: "center" }}>Documents can be uploaded before payment</Text>
+          </>
+        ) : (
+          <>
+            <Button label={t("contact_for_pricing")} icon="chatbubble-ellipses" variant="soft" onPress={() => router.push("/tickets")} testID="contact-pricing-btn" />
+            <Text style={{ color: colors.muted, fontSize: 11.5, textAlign: "center" }}>{t("price_not_assigned_hint")}</Text>
+          </>
+        )}
       </View>
     </View>
   );

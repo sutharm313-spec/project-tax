@@ -37,8 +37,19 @@ def file_token(doc_id: str, user_id: str, action: str) -> str:
     return _token({"doc": doc_id, "usr": user_id, "act": action, "typ": "file"}, FILE_TTL)
 
 
+def grid_token(grid_id: str, user_id: str, action: str = "view") -> str:
+    """Signed short-lived token authorizing a specific GridFS object (e.g. a
+    payment screenshot). Authorization is checked server-side BEFORE issuing."""
+    from security import _token
+    return _token({"grid": grid_id, "usr": user_id, "act": action, "typ": "gridfile"}, FILE_TTL)
+
+
 def verify_file_token(token: str) -> dict:
     return decode_token(token, expected="file")
+
+
+def verify_grid_token(token: str) -> dict:
+    return decode_token(token, expected="gridfile")
 
 
 async def put_file(data: bytes, filename: str, content_type: str, meta: dict) -> str:

@@ -2,6 +2,7 @@
 from datetime import timedelta
 
 from core import COLL, db, now
+from common import ay_for_fy
 from notify import notify
 from security import DEFAULT_PERMS, hash_password
 
@@ -105,6 +106,26 @@ async def seed_if_empty() -> None:
                                "instructions": "", } for k in doc_keys],
             "created_at": now()})
         catalog_ids[name] = str(res.inserted_id)
+
+    # Demo client-specific PRIVATE prices (Client + Service + FY + AY).
+    # No standard price is ever shown to clients; only these assigned prices apply.
+    admin_id = str(admin.inserted_id)
+    demo_prices = [
+        ("ITR Filing", "FY 2025-26", 1499), ("ITR Filing", "FY 2026-27", 1699),
+        ("GSTR-3B", "FY 2026-27", 799), ("GSTR-3B", "FY 2025-26", 799),
+        ("Bookkeeping", "FY 2025-26", 1999), ("Bookkeeping", "FY 2026-27", 2199),
+        ("GST Registration", "FY 2026-27", 1499), ("GSTR-1", "FY 2026-27", 699),
+        ("Tax Planning", "FY 2026-27", 2499), ("TDS Return", "FY 2026-27", 1299),
+    ]
+    for sname, fy, amt in demo_prices:
+        if sname not in catalog_ids:
+            continue
+        ay = ay_for_fy(fy)
+        await db[COLL["client_prices"]].insert_one({
+            "client_id": client_id, "service_id": catalog_ids[sname], "service_name": sname,
+            "category": "", "fy": fy, "ay": ay, "amount": amt, "active": True,
+            "history": [{"action": "set", "amount": amt, "active": True, "at": now(), "by": admin_id, "by_name": "Manoj (Admin)"}],
+            "created_by": admin_id, "created_by_name": "Manoj (Admin)", "created_at": now(), "updated_at": now()})
 
     # Request 1: ITR — paid & in progress, docs uploaded
     r1 = await db[COLL["requests"]].insert_one({

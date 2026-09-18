@@ -10,7 +10,8 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from common import FY_LIST, build_timeline, clean, clean_list, create_invoice, get_settings, re_utr, validate_utr
+from common import (FY_LIST, build_timeline, clean, clean_list, create_invoice, enrich_payment, get_settings,
+                    get_client_price, ay_for_fy, re_utr, validate_utr)
 from core import COLL, db, now
 from notify import (audit, email_document_status, email_payment_verified, email_service_status, email_ticket_reply,
                     log_doc_access, notify, wa_deep_link)
@@ -152,13 +153,20 @@ async def update_business(business_id: str, body: BusinessIn, user: CurrentUser 
 
 
 # ---------------- catalog ----------------
+def _public_service(doc: dict) -> dict:
+    """Catalog view for clients — base/standard price is NEVER exposed."""
+    out = clean(doc, extra_drop=["price", "price_type"])
+    out["price_visible"] = False
+    return out
+
+
 @router.get("/catalog")
 async def catalog(category: Optional[str] = None):
     q = {"active": True}
     if category:
         q["category"] = category
-    docs = await db[COLL["catalog"]].find(q).sort([("category", 1), ("price", 1)]).to_list(200)
-    return {"services": clean_list(docs)}
+    docs = await db[COLL["catalog"]].find(q).sort([("category", 1), ("name", 1)]).to_list(200)
+    return {"services": [_public_service(d) for d in docs]}
 
 
 @router.get("/catalog/{service_id}")
@@ -166,7 +174,20 @@ async def catalog_detail(service_id: str):
     doc = await db[COLL["catalog"]].find_one({"_id": ObjectId(service_id), "active": True})
     if not doc:
         raise HTTPException(status_code=404, detail="Service not found")
-    return {"service": clean(doc)}
+    return {"service": _public_service(doc)}
+
+
+@router.get("/client/price")
+async def client_price(service_id: str, fy: str, user: CurrentUser = Depends(get_current_user)):
+    """Returns ONLY this client's assigned price for the service+FY. If none is
+    assigned, returns assigned=False so the client sees 'Contact us for pricing'
+    and cannot pay. Standard prices are never revealed."""
+    if fy not in FY_LIST:
+        raise HTTPException(status_code=400, detail="Invalid financial year")
+    price = await get_client_price(user.id, service_id, fy)
+    if not price:
+        return {"assigned": False, "amount": None, "fy": fy, "ay": ay_for_fy(fy), "currency": "INR"}
+    return {"assigned": True, "amount": int(price["amount"]), "fy": fy, "ay": price.get("ay") or ay_for_fy(fy), "currency": "INR"}
 
 
 # ---------------- service requests ----------------
@@ -186,10 +207,17 @@ async def create_request(body: RequestIn, user: CurrentUser = Depends(get_curren
         raise HTTPException(status_code=404, detail="Business not found")
     if body.fy not in FY_LIST:
         raise HTTPException(status_code=400, detail="Invalid financial year")
+    # Server-authoritative pricing: only a price assigned to THIS client for THIS
+    # service + FY is valid. No standard/base price fallback. Frontend cannot set price.
+    price_doc = await get_client_price(user.id, str(svc["_id"]), body.fy)
+    if not price_doc:
+        raise HTTPException(status_code=402, detail="Price not assigned yet. Please contact us for pricing.")
+    amount = int(price_doc["amount"])
+    ay = price_doc.get("ay") or ay_for_fy(body.fy)
     req = {
-        "client_id": user.id, "business_id": body.business_id, "fy": body.fy,
+        "client_id": user.id, "business_id": body.business_id, "fy": body.fy, "ay": ay,
         "service_id": str(svc["_id"]), "service_name": svc["name"], "category": svc["category"],
-        "price": svc.get("price", 0), "status": "payment_pending", "payment_status": "pending",
+        "price": amount, "price_id": str(price_doc["_id"]), "status": "payment_pending", "payment_status": "pending",
         "checklist": [{"key": c["key"], "name": c["name"], "required": c.get("required", True),
                        "instructions": c.get("instructions", ""), "status": "required", "document_id": None}
                       for c in svc.get("required_docs", [])],
@@ -198,7 +226,7 @@ async def create_request(body: RequestIn, user: CurrentUser = Depends(get_curren
     }
     res = await db[COLL["requests"]].insert_one(req)
     req["_id"] = res.inserted_id
-    invoice = await create_invoice(user.id, str(res.inserted_id), svc["name"], f"{svc['name']} — {body.fy}", svc.get("price", 0), body.business_id)
+    invoice = await create_invoice(user.id, str(res.inserted_id), svc["name"], f"{svc['name']} — {body.fy} ({ay})", amount, body.business_id)
     staff_users = await db.users.find({"role": {"$in": ["super_admin", "admin", "manager"]}}).to_list(10)
     for s in staff_users:
         await notify(str(s["_id"]), "New service request", f"{user.name} ({user.client_code}) requested {svc['name']} — {body.fy}.", "info", {"request_id": str(res.inserted_id)})
@@ -233,7 +261,7 @@ async def request_detail(request_id: str, user: CurrentUser = Depends(get_curren
         staff = {"id": str(s["_id"]), "name": s.get("name")} if s else None
     return {
         "request": clean(req), "documents": [_doc_view(d, request_map) for d in docs],
-        "invoice": clean(invoice), "payment": clean(payment, extra_drop=[]),
+        "invoice": clean(invoice), "payment": enrich_payment(clean(payment, extra_drop=[])),
         "business": clean(business), "assigned_staff": staff,
         "timeline": await build_timeline(req, docs),
     }
@@ -433,7 +461,8 @@ async def submit_payment(payment_id: str, body: SubmitUtrIn, user: CurrentUser =
     if payment.get("status") not in ("pending", "rejected"):
         raise HTTPException(status_code=400, detail="This payment cannot be updated")
     utr = validate_utr(body.utr)
-    await db[COLL["payments"]].update_one({"_id": payment["_id"]}, {"$set": {"status": "submitted", "utr": utr, "submitted_at": now()}})
+    await db[COLL["payments"]].update_one({"_id": payment["_id"]}, {"$set": {"status": "submitted", "utr": utr, "submitted_at": now()},
+        "$push": {"history": {"status": "submitted", "label": "Under Verification", "at": now(), "by": "client", "note": f"UTR {utr} submitted"}}})
     if payment.get("request_id"):
         await db[COLL["requests"]].update_one({"_id": ObjectId(payment["request_id"])}, {"$set": {"status": "payment_submitted"}})
         req = await db[COLL["requests"]].find_one({"_id": ObjectId(payment["request_id"])})
@@ -441,7 +470,29 @@ async def submit_payment(payment_id: str, body: SubmitUtrIn, user: CurrentUser =
         for s in staff_users:
             await notify(str(s["_id"]), "Payment verification needed", f"{user.name} submitted UPI reference {utr} for {req.get('service_name', '') if req else 'service'}.", "warning", {"payment_id": payment_id})
     await audit(user.id, user.role, "payment_submitted", f"payment:{payment_id}", {"utr": utr})
-    return {"ok": True, "status": "submitted"}
+    return {"ok": True, "status": "submitted", "status_label": "Under Verification"}
+
+
+@router.post("/client/payments/{payment_id}/screenshot")
+async def upload_payment_screenshot(payment_id: str, file: UploadFile, user: CurrentUser = Depends(get_current_user)):
+    """Optional payment proof image. Stored privately in GridFS (no public URL)."""
+    from storage import put_file
+    payment = await db[COLL["payments"]].find_one({"_id": ObjectId(payment_id), "client_id": user.id})
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    data = await file.read()
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
+    if ext not in ("jpg", "jpeg", "png", "pdf"):
+        raise HTTPException(status_code=400, detail="Upload a JPG, PNG or PDF screenshot")
+    if len(data) <= 0 or len(data) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Screenshot must be under 10 MB")
+    grid_id = await put_file(data, file.filename or "payment_proof", file.content_type or "image/png",
+                             {"client_id": user.id, "kind": "payment_screenshot", "payment_id": payment_id})
+    await db[COLL["payments"]].update_one({"_id": payment["_id"]}, {"$set": {
+        "screenshot_grid_id": grid_id, "screenshot_filename": file.filename, "screenshot_ct": file.content_type,
+        "screenshot_uploaded_at": now()}})
+    await audit(user.id, user.role, "payment_screenshot_uploaded", f"payment:{payment_id}")
+    return {"ok": True}
 
 
 @router.get("/client/payments")
@@ -450,7 +501,7 @@ async def list_payments(user: CurrentUser = Depends(get_current_user), status: O
     if status:
         q["status"] = status
     docs = await db[COLL["payments"]].find(q).sort("created_at", -1).to_list(200)
-    return {"payments": clean_list(docs)}
+    return {"payments": [enrich_payment(p) for p in clean_list(docs)]}
 
 
 @router.get("/client/invoices")
@@ -583,4 +634,18 @@ async def stream_file(token: str):
         raise HTTPException(status_code=404, detail="File not found")
     content, content_type, filename = await get_file(doc["grid_id"])
     headers = {"Content-Disposition": f"{('attachment' if data['act'] == 'download' else 'inline')}; filename=\"{filename}\""}
+    return Response(content=content, media_type=content_type, headers=headers)
+
+
+@router.get("/gridfiles/{token}")
+async def stream_grid_file(token: str):
+    """Streams an arbitrary private GridFS object (e.g. a payment screenshot)
+    authorized by a signed short-lived token issued after a server-side check."""
+    from storage import get_file, verify_grid_token
+    try:
+        data = verify_grid_token(token)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Link expired. Please reopen.")
+    content, content_type, filename = await get_file(data["grid"])
+    headers = {"Content-Disposition": f"inline; filename=\"{filename}\""}
     return Response(content=content, media_type=content_type, headers=headers)

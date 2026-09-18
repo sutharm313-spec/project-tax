@@ -8,6 +8,24 @@ from core import COLL, db, iso, now, uid
 
 FY_LIST = ["FY 2024-25", "FY 2025-26", "FY 2026-27", "FY 2027-28"]
 
+
+def ay_for_fy(fy: str) -> str:
+    """Assessment Year = Financial Year + 1. 'FY 2025-26' -> 'AY 2026-27'."""
+    try:
+        core = fy.replace("FY", "").strip()  # 2025-26
+        start = int(core.split("-")[0])
+        return f"AY {start + 1}-{str(start + 2)[2:]}"
+    except Exception:
+        return ""
+
+
+async def get_client_price(client_id: str, service_id: str, fy: str) -> Optional[dict]:
+    """Return the ACTIVE client-specific price doc for client+service+fy, else None.
+    Base/catalog prices are NEVER used as a fallback for clients."""
+    return await db[COLL["client_prices"]].find_one({
+        "client_id": client_id, "service_id": service_id, "fy": fy, "active": True,
+    })
+
 REQUEST_STEPS = ["requested", "payment_verified", "documents_uploaded", "under_review",
                  "work_in_progress", "verification", "completed"]
 
@@ -107,3 +125,37 @@ def validate_utr(utr: str) -> str:
 
 def re_utr(t: str) -> bool:
     return len(t) == 12 and t.isdigit()
+
+
+
+PAYMENT_STATUS_LABELS = {
+    "pending": "Awaiting Payment",
+    "submitted": "Under Verification",
+    "under_verification": "Under Verification",
+    "verified": "Payment Received",
+    "received": "Payment Received",
+    "rejected": "Payment Not Received",
+    "not_received": "Payment Not Received",
+    "refunded": "Refunded",
+    "cancelled": "Cancelled",
+    "partially_paid": "Partially Paid",
+}
+
+# Admin action -> internal payment status (document unlock keys off request.payment_status)
+ADMIN_STATUS_MAP = {
+    "received": "verified",
+    "not_received": "rejected",
+    "under_verification": "submitted",
+}
+
+
+def payment_label(status):
+    return PAYMENT_STATUS_LABELS.get(status or "pending", (status or "").replace("_", " ").title())
+
+
+def enrich_payment(p):
+    """Attach a friendly status_label to a cleaned payment dict."""
+    if not p:
+        return p
+    p["status_label"] = payment_label(p.get("status"))
+    return p

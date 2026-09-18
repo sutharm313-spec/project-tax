@@ -13,7 +13,7 @@ import { Card, ChipRow, EmptyState, ErrorState, Icon, Input, SkeletonList } from
 import { makeStyles, radius, spacing, useTheme } from "@/src/theme";
 import { usesNativeTabs } from "@/src/navigation";
 
-type Service = { id: string; name: string; category: string; description: string; price: number; estimated_days: number; required_docs: { key: string; name: string; required: boolean }[] };
+type Service = { id: string; name: string; category: string; description: string; estimated_days: number; required_docs: { key: string; name: string; required: boolean }[] };
 
 const CATS = [
   { key: "all", labelKey: "all" as const },
@@ -93,7 +93,10 @@ export default function Services() {
                     <Text style={s.serviceName} numberOfLines={2}>{sv.name}</Text>
                     <Text style={s.serviceDesc} numberOfLines={2}>{sv.description}</Text>
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
-                      <Text style={s.price}>₹{sv.price.toLocaleString("en-IN")}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                        <Text style={s.viewPrice}>{t("view")}</Text>
+                        <Icon name="arrow-forward" size={12} color={colors.brand} />
+                      </View>
                       <View style={s.days}>
                         <Icon name="time-outline" size={11} color={colors.muted} />
                         <Text style={s.daysText}>{sv.estimated_days}d</Text>
@@ -122,6 +125,7 @@ const useStyles = makeStyles((colors) => ({
   serviceName: { color: colors.onSurface, fontWeight: "800", fontSize: 14.5, minHeight: 38 },
   serviceDesc: { color: colors.muted, fontSize: 12, lineHeight: 17, minHeight: 34 },
   price: { color: colors.brand, fontWeight: "800", fontSize: 15 },
+  viewPrice: { color: colors.brand, fontWeight: "800", fontSize: 12.5 },
   days: { flexDirection: "row", alignItems: "center", gap: 3 },
   daysText: { color: colors.muted, fontSize: 11 },
   requestBtn: { borderRadius: radius.md, alignItems: "center", justifyContent: "center", paddingVertical: 9, marginTop: 6 },

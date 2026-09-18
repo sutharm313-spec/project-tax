@@ -25,8 +25,7 @@ Production-ready premium mobile-first client portal + secure web-based Admin/Sta
 ## Core Requirements (static)
 - Client isolation (server-enforced), document upload always free, view/download locked until payment verified server-side (independent re-check on every file token + streaming), audited manual unlock, branded emails, WhatsApp deep-link fallback (no fake API), bilingual, premium motion.
 
-## Implemented (2026-09-18)
-- Animated splash + 4 onboarding slides.
+## Implemented (2026-09-18)- Animated splash + 4 onboarding slides.
 - Auth: register → email OTP verify, login (rate-limited, brute-force protected), forgot/reset, refresh, logout, unique Client ID (TM-000001…).
 - Client dashboard: business & FY switchers, animated metrics, Action Center, deadlines, recent requests, profile completion.
 - Services marketplace (27 seeded services, 6 categories, search/chips) → service detail → request.
@@ -38,8 +37,13 @@ Production-ready premium mobile-first client portal + secure web-based Admin/Sta
 - Admin web dashboard (/admin): analytics (cards + charts), payment verification queue, document review + audited unlock, requests pipeline + staff assignment, clients + internal notes, CRM leads, tickets inbox, catalog manager, staff & permissions, settings (business/UPI), global search, CSV reports, audit trail.
 - Verified end-to-end by testing agent (30/32) + fixed GridFS bucket + file-token import + login JSON body + admin useTheme/useStyles.
 
-## Backlog
-- P1: PDF invoice/receipt generation (currently CSV reports + on-screen invoices); document expiry reminders scheduler; recurring service auto-creation.
+## Implemented (2026-09-18b) — Private Pricing + UPI manual verification
+- Private client-specific pricing: NO public price anywhere (catalog/detail strip price, services list shows "View →", service detail shows assigned amount or "Private pricing"/"Contact us for pricing"). Prices assigned per Client+Service+FY (AY = FY+1). Server-authoritative: create_request 402s without an assigned price; amount snapshotted on request+invoice so later edits don't affect old orders.
+- Admin pricing panel (client detail): search service, pick FY, set amount; list with Active/Inactive toggle (deactivate), pricing history sheet; bulk endpoint. All changes audited.
+- UPI QR manual verification (no Razorpay): client sees QR + private amount, submits 12-digit UTR + optional payment screenshot (private GridFS). Status: Awaiting → Under Verification. Admin sets Payment Received / Under Verification / Payment Not Received; only "Received" unlocks that specific request's (one service + FY/AY) documents; flip re-locks. Payment history/audit + admin screenshot viewer via signed gridfile token.
+- Verified end-to-end by testing agent: 21/21 pricing+UPI tests passed (public price hidden, price gating, snapshot immutability, UPI flow, screenshot, status unlock/re-lock, FY/AY scoping, RBAC, isolation, legacy /verify compat).
+
+## Backlog- P1: PDF invoice/receipt generation (currently CSV reports + on-screen invoices); document expiry reminders scheduler; recurring service auto-creation.
 - P1: real Razorpay/WhatsApp Cloud API/OCR wiring when user provides credentials (architecture + env placeholders ready).
 - P2: dedicated GST/Audit/TDS structured workspaces (basic notes/workspace JSON in place); push notifications (on request); 2FA.
 

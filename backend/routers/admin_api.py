@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr, Field
 
-from common import clean, clean_list, create_invoice, get_settings
+from common import (clean, clean_list, create_invoice, get_settings, enrich_payment, get_client_price,
+                    ay_for_fy, payment_label, FY_LIST)
 from core import COLL, db, now
 from notify import (audit, email_document_status, email_payment_verified, email_service_status, email_ticket_reply,
                     notify, wa_deep_link)
@@ -139,8 +140,133 @@ async def client_detail(client_id: str, user: CurrentUser = Depends(require_staf
     invoices = await db[COLL["invoices"]].find({"client_id": client_id}).sort("created_at", -1).to_list(200)
     docs_count = await db[COLL["documents"]].count_documents({"client_id": client_id})
     notes = await db[COLL["internal_notes"]].find({"client_id": client_id}).sort("created_at", -1).to_list(100)
+    prices = await db[COLL["client_prices"]].find({"client_id": client_id}).sort("created_at", -1).to_list(300)
     return {"client": clean(doc), "businesses": clean_list(businesses), "requests": clean_list(requests),
-            "invoices": clean_list(invoices), "documents_count": docs_count, "notes": clean_list(notes)}
+            "invoices": clean_list(invoices), "documents_count": docs_count, "notes": clean_list(notes),
+            "prices": clean_list(prices)}
+
+
+# ---------------- client-specific private pricing ----------------
+def _perm_pricing(user: CurrentUser):
+    if not (has_perm(user, "manage_payments") or has_perm(user, "manage_services")):
+        raise HTTPException(status_code=403, detail="Missing permission: manage pricing")
+
+
+@router.get("/clients/{client_id}/prices")
+async def list_client_prices(client_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "view_clients")
+    prices = await db[COLL["client_prices"]].find({"client_id": client_id}).sort([("created_at", -1)]).to_list(500)
+    services = await db[COLL["catalog"]].find({"active": True}).sort([("category", 1), ("name", 1)]).to_list(300)
+    svc_out = [{"id": str(s["_id"]), "name": s["name"], "category": s["category"], "suggested_price": s.get("price", 0)} for s in services]
+    return {"prices": clean_list(prices), "services": svc_out, "fy_list": FY_LIST}
+
+
+class PriceIn(BaseModel):
+    service_id: str
+    fy: str
+    amount: int
+    active: bool = True
+
+
+@router.post("/clients/{client_id}/prices")
+async def set_client_price(client_id: str, body: PriceIn, user: CurrentUser = Depends(require_staff)):
+    _perm_pricing(user)
+    client = await db.users.find_one({"_id": ObjectId(client_id), "role": "client"}, {"name": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    svc = await db[COLL["catalog"]].find_one({"_id": ObjectId(body.service_id)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if body.fy not in FY_LIST:
+        raise HTTPException(status_code=400, detail="Invalid financial year")
+    if body.amount < 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    ay = ay_for_fy(body.fy)
+    existing = await db[COLL["client_prices"]].find_one({"client_id": client_id, "service_id": body.service_id, "fy": body.fy, "ay": ay})
+    hist = {"action": "set", "amount": int(body.amount), "active": body.active, "at": now(), "by": user.id, "by_name": user.name}
+    if existing:
+        await db[COLL["client_prices"]].update_one({"_id": existing["_id"]}, {
+            "$set": {"amount": int(body.amount), "active": body.active, "updated_at": now(), "updated_by": user.name},
+            "$push": {"history": hist}})
+        price_id = str(existing["_id"])
+    else:
+        price = {"client_id": client_id, "service_id": body.service_id, "service_name": svc["name"],
+                 "category": svc["category"], "fy": body.fy, "ay": ay, "amount": int(body.amount),
+                 "active": body.active, "history": [hist], "created_by": user.id, "created_by_name": user.name,
+                 "created_at": now(), "updated_at": now()}
+        res = await db[COLL["client_prices"]].insert_one(price)
+        price_id = str(res.inserted_id)
+    await audit(user.id, user.role, "price_set", f"client:{client_id}", {"service": svc["name"], "fy": body.fy, "ay": ay, "amount": body.amount, "active": body.active})
+    doc = await db[COLL["client_prices"]].find_one({"_id": ObjectId(price_id)})
+    return {"price": clean(doc)}
+
+
+class PriceEditIn(BaseModel):
+    amount: Optional[int] = None
+    active: Optional[bool] = None
+
+
+@router.put("/prices/{price_id}")
+async def edit_client_price(price_id: str, body: PriceEditIn, user: CurrentUser = Depends(require_staff)):
+    _perm_pricing(user)
+    price = await db[COLL["client_prices"]].find_one({"_id": ObjectId(price_id)})
+    if not price:
+        raise HTTPException(status_code=404, detail="Price not found")
+    updates: dict = {"updated_at": now(), "updated_by": user.name}
+    action = "edit"
+    if body.amount is not None:
+        if body.amount < 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+        updates["amount"] = int(body.amount)
+    if body.active is not None:
+        updates["active"] = body.active
+        action = "activate" if body.active else "deactivate"
+    hist = {"action": action, "amount": updates.get("amount", price.get("amount")),
+            "active": updates.get("active", price.get("active")), "at": now(), "by": user.id, "by_name": user.name}
+    await db[COLL["client_prices"]].update_one({"_id": price["_id"]}, {"$set": updates, "$push": {"history": hist}})
+    await audit(user.id, user.role, f"price_{action}", f"price:{price_id}", {"amount": updates.get("amount"), "active": updates.get("active")})
+    doc = await db[COLL["client_prices"]].find_one({"_id": price["_id"]})
+    return {"price": clean(doc)}
+
+
+@router.get("/prices/{price_id}")
+async def price_history(price_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "view_clients")
+    price = await db[COLL["client_prices"]].find_one({"_id": ObjectId(price_id)})
+    if not price:
+        raise HTTPException(status_code=404, detail="Price not found")
+    return {"price": clean(price)}
+
+
+class BulkPriceIn(BaseModel):
+    client_ids: list[str] = Field(default_factory=list)
+    service_id: str
+    fy: str
+    amount: int
+
+
+@router.post("/prices/bulk")
+async def bulk_set_prices(body: BulkPriceIn, user: CurrentUser = Depends(require_staff)):
+    _perm_pricing(user)
+    svc = await db[COLL["catalog"]].find_one({"_id": ObjectId(body.service_id)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if body.fy not in FY_LIST:
+        raise HTTPException(status_code=400, detail="Invalid financial year")
+    ay = ay_for_fy(body.fy)
+    count = 0
+    for cid in body.client_ids:
+        hist = {"action": "bulk_set", "amount": int(body.amount), "active": True, "at": now(), "by": user.id, "by_name": user.name}
+        existing = await db[COLL["client_prices"]].find_one({"client_id": cid, "service_id": body.service_id, "fy": body.fy, "ay": ay})
+        if existing:
+            await db[COLL["client_prices"]].update_one({"_id": existing["_id"]}, {"$set": {"amount": int(body.amount), "active": True, "updated_at": now(), "updated_by": user.name}, "$push": {"history": hist}})
+        else:
+            await db[COLL["client_prices"]].insert_one({"client_id": cid, "service_id": body.service_id, "service_name": svc["name"],
+                "category": svc["category"], "fy": body.fy, "ay": ay, "amount": int(body.amount), "active": True,
+                "history": [hist], "created_by": user.id, "created_by_name": user.name, "created_at": now(), "updated_at": now()})
+        count += 1
+    await audit(user.id, user.role, "price_bulk_set", f"service:{body.service_id}", {"clients": count, "fy": body.fy, "amount": body.amount})
+    return {"ok": True, "updated": count}
 
 
 # ---------------- payments verification ----------------
@@ -153,19 +279,101 @@ async def list_payments(user: CurrentUser = Depends(require_staff), status: Opti
     docs = await db[COLL["payments"]].find(q).sort("created_at", -1).limit(200).to_list(200)
     out = []
     for p in docs:
-        item = clean(p)
-        cl = await db.users.find_one({"_id": ObjectId(p["client_id"])}, {"name": 1, "client_code": 1})
-        item["client"] = {"name": cl.get("name"), "client_code": cl.get("client_code")} if cl else None
+        item = enrich_payment(clean(p, extra_drop=["screenshot_grid_id"]))
+        item["has_screenshot"] = bool(p.get("screenshot_grid_id"))
+        cl = await db.users.find_one({"_id": ObjectId(p["client_id"])}, {"name": 1, "client_code": 1, "mobile": 1, "email": 1})
+        item["client"] = {"name": cl.get("name"), "client_code": cl.get("client_code"), "mobile": cl.get("mobile"), "email": cl.get("email")} if cl else None
         if p.get("request_id"):
-            r = await db[COLL["requests"]].find_one({"_id": ObjectId(p["request_id"])}, {"service_name": 1, "fy": 1})
-            item["service"] = {"name": r.get("service_name"), "fy": r.get("fy")} if r else None
+            r = await db[COLL["requests"]].find_one({"_id": ObjectId(p["request_id"])}, {"service_name": 1, "fy": 1, "ay": 1})
+            item["service"] = {"name": r.get("service_name"), "fy": r.get("fy"), "ay": r.get("ay") or ay_for_fy(r.get("fy", ""))} if r else None
         out.append(item)
     return {"payments": out}
 
 
+@router.get("/payments/{payment_id}/screenshot")
+async def payment_screenshot(payment_id: str, user: CurrentUser = Depends(require_staff)):
+    """Issues a signed short-lived link to view the client's payment proof."""
+    require_perm(user, "manage_payments")
+    from storage import grid_token
+    payment = await db[COLL["payments"]].find_one({"_id": ObjectId(payment_id)})
+    if not payment or not payment.get("screenshot_grid_id"):
+        raise HTTPException(status_code=404, detail="No screenshot uploaded for this payment")
+    token = grid_token(payment["screenshot_grid_id"], user.id, "view")
+    await audit(user.id, user.role, "payment_screenshot_viewed", f"payment:{payment_id}")
+    return {"file_token": token, "expires_in": 300, "filename": payment.get("screenshot_filename")}
+
+
 class VerifyIn(BaseModel):
-    action: str  # approve | reject
+    action: str  # approve | reject (legacy) OR status: received | not_received | under_verification
     reason: str = ""
+
+
+async def _apply_payment_status(payment: dict, new_status: str, user: CurrentUser, reason: str = "") -> dict:
+    """Single source of truth for payment status changes. Unlock (request
+    payment_status='verified') happens ONLY for 'received'. Client can never
+    call this — staff only. FY/AY scoping is inherent: unlock touches only the
+    specific linked request (one service + one FY/AY)."""
+    payment_id = str(payment["_id"])
+    label = payment_label(new_status)
+    prev = payment.get("status")
+    hist = {"status": new_status, "label": label, "at": now(), "by": "staff",
+            "by_id": user.id, "by_name": user.name, "note": reason}
+    set_fields = {"status": new_status, "status_changed_by": user.name, "status_changed_at": now()}
+    if new_status == "received":
+        set_fields.update({"verified_by": user.id, "verified_by_name": user.name, "verified_at": now()})
+    if reason:
+        set_fields["rejection_reason"] = reason
+    await db[COLL["payments"]].update_one({"_id": payment["_id"]}, {"$set": set_fields, "$push": {"history": hist}})
+
+    if payment.get("invoice_id"):
+        inv_status = "paid" if new_status == "received" else "unpaid"
+        inv_set = {"status": inv_status}
+        if new_status == "received":
+            inv_set.update({"payment_id": payment_id, "paid_at": now()})
+        await db[COLL["invoices"]].update_one({"_id": ObjectId(payment["invoice_id"])}, {"$set": inv_set})
+
+    if payment.get("request_id"):
+        if new_status == "received":
+            req = await db[COLL["requests"]].find_one_and_update(
+                {"_id": ObjectId(payment["request_id"])},
+                {"$set": {"payment_status": "verified", "status": "in_progress"},
+                 "$push": {"timeline": {"step": "payment_verified", "at": now()}}}, return_document=True)
+            if req:
+                client_doc = await db.users.find_one({"_id": ObjectId(payment["client_id"])})
+                wa = wa_deep_link(client_doc.get("mobile", ""), "payment_verified",
+                                  client_name=client_doc.get("name", "Client"), service_name=req.get("service_name"))
+                await db[COLL["wa_log"]].insert_one({"client_id": payment["client_id"], **wa})
+                await notify(payment["client_id"], "Payment received", f"Your payment for {req.get('service_name')} — {req.get('fy','')} is confirmed. You can now view and download your documents for this year.", "success", {"request_id": str(req["_id"])})
+                invoice = await db[COLL["invoices"]].find_one({"_id": ObjectId(payment["invoice_id"])}) if payment.get("invoice_id") else None
+                await email_payment_verified(client_doc["email"], client_doc.get("name", ""), req.get("service_name", ""),
+                                             f"₹{payment.get('amount', 0):,}", (invoice or {}).get("number", ""), payment.get("utr", ""))
+        else:
+            # not_received / under_verification -> re-lock this year's service/documents
+            new_req_status = "payment_pending" if new_status == "not_received" else "payment_submitted"
+            await db[COLL["requests"]].update_one({"_id": ObjectId(payment["request_id"])},
+                {"$set": {"payment_status": "pending" if new_status == "not_received" else "pending", "status": new_req_status}})
+            msg = {"not_received": f"Your payment could not be verified. {reason}".strip(),
+                   "under_verification": "Your payment is under verification. We'll confirm shortly."}[new_status]
+            await notify(payment["client_id"], "Payment status updated", msg, "warning" if new_status == "under_verification" else "error", {"payment_id": payment_id})
+    await audit(user.id, user.role, f"payment_{new_status}", f"payment:{payment_id}", {"prev": prev, "utr": payment.get("utr"), "amount": payment.get("amount"), "reason": reason})
+    return {"ok": True, "status": new_status, "status_label": label}
+
+
+class StatusIn(BaseModel):
+    status: str  # received | not_received | under_verification
+    reason: str = ""
+
+
+@router.post("/payments/{payment_id}/status")
+async def set_payment_status(payment_id: str, body: StatusIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_payments")
+    if body.status not in ("received", "not_received", "under_verification"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+    payment = await db[COLL["payments"]].find_one({"_id": ObjectId(payment_id)})
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    reason = body.reason.strip() or ("Reference number could not be verified" if body.status == "not_received" else "")
+    return await _apply_payment_status(payment, body.status, user, reason)
 
 
 @router.post("/payments/{payment_id}/verify")
@@ -174,38 +382,17 @@ async def verify_payment(payment_id: str, body: VerifyIn, user: CurrentUser = De
     payment = await db[COLL["payments"]].find_one({"_id": ObjectId(payment_id)})
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
-    if body.action == "approve":
-        if payment.get("status") == "verified":
-            return {"ok": True, "already": True}
-        await db[COLL["payments"]].update_one({"_id": payment["_id"]}, {"$set": {"status": "verified", "verified_by": user.id, "verified_by_name": user.name, "verified_at": now()}})
-        await db[COLL["invoices"]].update_one({"_id": ObjectId(payment["invoice_id"])}, {"$set": {"status": "paid", "payment_id": payment_id, "paid_at": now()}})
-        if payment.get("request_id"):
-            req = await db[COLL["requests"]].find_one_and_update(
-                {"_id": ObjectId(payment["request_id"])},
-                {"$set": {"payment_status": "verified", "status": "in_progress"},
-                 "$push": {"timeline": {"step": "payment_verified", "at": now()}}}, return_document=True)
-            if req:
-                settings = await get_settings()
-                wa = wa_deep_link((await db.users.find_one({"_id": ObjectId(payment["client_id"])})).get("mobile", ""),
-                                  "payment_verified", client_name=(await db.users.find_one({"_id": ObjectId(payment["client_id"])})).get("name", "Client"),
-                                  service_name=req.get("service_name"))
-                await db[COLL["wa_log"]].insert_one({"client_id": payment["client_id"], **wa})
-                await notify(payment["client_id"], "Payment verified", f"Your payment for {req.get('service_name')} is verified. You can now view and download your documents.", "success", {"request_id": str(req["_id"])})
-                client_doc = await db.users.find_one({"_id": ObjectId(payment["client_id"])})
-                invoice = await db[COLL["invoices"]].find_one({"_id": ObjectId(payment["invoice_id"])})
-                await email_payment_verified(client_doc["email"], client_doc.get("name", ""), req.get("service_name", ""),
-                                             f"₹{payment.get('amount', 0):,}", invoice.get("number", ""), payment.get("utr", ""))
-        await audit(user.id, user.role, "payment_verified", f"payment:{payment_id}", {"utr": payment.get("utr"), "amount": payment.get("amount")})
-        return {"ok": True, "status": "verified"}
-    elif body.action == "reject":
-        reason = body.reason.strip() or "Reference number could not be verified"
-        await db[COLL["payments"]].update_one({"_id": payment["_id"]}, {"$set": {"status": "rejected", "rejection_reason": reason, "verified_by": user.id, "verified_at": now()}})
-        if payment.get("request_id"):
-            await db[COLL["requests"]].update_one({"_id": ObjectId(payment["request_id"])}, {"$set": {"status": "payment_pending", "payment_status": "pending"}})
-        await notify(payment["client_id"], "Payment could not be verified", f"Reason: {reason}. Please check your UPI reference number and try again.", "error", {"payment_id": payment_id})
-        await audit(user.id, user.role, "payment_rejected", f"payment:{payment_id}", {"reason": reason})
-        return {"ok": True, "status": "rejected"}
-    raise HTTPException(status_code=400, detail="Invalid action")
+    mapping = {"approve": "received", "reject": "not_received",
+               "received": "received", "not_received": "not_received", "under_verification": "under_verification"}
+    new_status = mapping.get(body.action)
+    if not new_status:
+        raise HTTPException(status_code=400, detail="Invalid action")
+    if new_status == "received" and payment.get("status") == "received":
+        return {"ok": True, "already": True}
+    reason = body.reason.strip() or ("Reference number could not be verified" if new_status == "not_received" else "")
+    res = await _apply_payment_status(payment, new_status, user, reason)
+    # legacy response shape
+    return {"ok": True, "status": "verified" if new_status == "received" else ("rejected" if new_status == "not_received" else "submitted")}
 
 
 class BookkeepIn(BaseModel):

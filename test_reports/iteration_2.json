@@ -1,0 +1,41 @@
+{
+  "summary": "Backend regression + new-feature coverage for taxman.manoj private client pricing + UPI manual verification. 21/21 tests in tests/test_pricing_upi.py PASSED (0 failures). Every requested contract verified: (A) GET /api/catalog and /api/catalog/{id} strip `price` and set price_visible=false; (B) /api/client/price returns assigned=true+amount for ITR Filing FY 2026-27 (=1699, AY 2027-28) and FY 2025-26 (=1499, AY 2026-27), and assigned=false+amount:null for Bank Reconciliation; (C) POST /api/client/requests returns HTTP 402 'Price not assigned' when no client_price exists, else creates request with server-authoritative price + populated AY and matching invoice.total; (D) After admin PUT /api/admin/prices/{id} changes amount, the pre-existing request.price and invoice.total remain immutable (snapshot verified via re-fetch); (E) /api/client/payments/initiate returns qr_base64 data-URL + vpa + upi_uri; /submit rejects non-12-digit UTR (400) and accepts 12-digit UTR setting status=submitted, status_label='Under Verification'; (F) POST /api/client/payments/{id}/screenshot (multipart PNG) succeeds, admin GET /api/admin/payments shows has_screenshot=true, GET /api/admin/payments/{id}/screenshot returns file_token, GET /api/gridfiles/{token} streams image/png; (G) POST /api/admin/payments/{id}/status {received} verifies linked request (payment_status=verified) and unlocks documents (client GET /client/documents/{id}/access -> file_token); flipping to under_verification re-locks (402); not_received also locks; payment.history array grows on each transition; (H) Legacy POST /api/admin/payments/{id}/verify {action:approve|reject} maps to received|not_received with legacy `status: verified|rejected` response; (I) Admin pricing CRUD: list returns prices[] + services[] (with suggested_price) + fy_list; POST create/update with uniqueness on client+service+fy+ay; PUT edits amount and toggles active writing history; GET returns full history (>=2 entries after edit); POST /api/admin/prices/bulk assigns to multiple clients (updated=1); (J) FY/AY scoping: paying TDS Return FY 2025-26 unlocks ONLY that request's docs; FY 2026-27 same-service request remains locked (402); (K) RBAC: plain client token -> 403 on /api/admin/clients/{id}/prices and /api/admin/payments/{id}/status; staff (accountant) without manage_staff -> 403 on POST /api/admin/staff; (L) Client isolation: freshly-registered client B gets 404 on client A's request, 403 on admin/payments/{id}/screenshot, and assigned=false on ITR Filing FY 2026-27 price lookup. Auth payload contract: /api/auth/login expects `identifier` (not `email`); /api/auth/verify-otp expects `code` (not `otp`) — tests updated accordingly. No new backend bugs found in this iteration.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "class-scoped fixture defined as instance method (TestIsolation.clientB)", "issue": "PytestRemovedIn10 deprecation warning only; test still runs. Non-blocking."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pricing_upi.py",
+    "/app/test_reports/pytest/pricing_upi_results.xml"
+  ],
+  "action_items": [
+    "None required for the requested private-pricing + UPI-verification feature set — every contract passed. Main agent may proceed to frontend integration.",
+    "Optional cleanup: convert TestIsolation.clientB into a classmethod-decorated fixture to silence pytest 10 deprecation warning.",
+    "Optional: seed also asserts `history` on client_prices; consider indexing (client_id, service_id, fy, ay) unique to catch duplicate inserts at DB layer (currently enforced in code via find_one before insert)."
+  ],
+  "critical_code_review_comments": [
+    "Server-authoritative pricing correctly enforced: create_request pulls price ONLY from client_prices; no fallback to catalog.price. 402 shape returned as required.",
+    "Snapshot immutability: request.price and invoice.total are copied at creation time from client_prices.amount and never re-derived; verified end-to-end.",
+    "Payment status transitions centralized in _apply_payment_status — single source of truth prevents drift between /status and legacy /verify endpoints, and always writes to history.",
+    "grid_token issuance requires manage_payments perm before signing — client B correctly blocked (403) at admin router dependency layer.",
+    "public_service() drops both `price` and `price_type` before serialization — no price leakage in catalog list or detail.",
+    "FY/AY scoping is inherent to the per-request payment_status field; unlock touches only the specific request. Confirmed by TDS Return dual-FY test."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pricing_upi.py"
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "not tested"},
+  "seed_data_creation": "Tests create ephemeral service requests for the demo client (GSTR-1 FY 2026-27, Tax Planning FY 2026-27, TDS Return FY 2025-26 + FY 2026-27), submit UTRs, upload one PNG screenshot and small PDFs, and add/edit client_prices for GST Registration FY 2024-25 and Financial Statements FY 2026-27. Also registers one throwaway client (iso_<ts>@taxman.dev) for isolation. No seeded/production data mutated destructively; admin edits are restored where noted.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New pricing/UPI suite at /app/backend/tests/test_pricing_upi.py — run with `pytest tests/test_pricing_upi.py -n 0 -v`. Auth payload contract confirmed: login uses `identifier`, verify-otp uses `code`. Fresh reseeded DB has 10 seeded client_prices for demo client; Bank Reconciliation is intentionally UNassigned and used as the 402 canary. Legacy backend suite (test_taxman_backend.py from iteration_1) was not re-run; if regression across auth/isolation/docs is needed, run both files.",
+  "rca_of_issue": "No new bugs. Initial 21 setup errors were caused by the test file using {email,otp} field names; the API contracts are `identifier` (login) and `code` (verify-otp). Tests were updated to match and all 21 pass."
+}

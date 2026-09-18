@@ -6,8 +6,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api } from "@/src/api";
-import { Button, Card, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
-import { makeStyles, spacing, useTheme } from "@/src/theme";
+import { Button, Card, ChipRow, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
+import { makeStyles, radius, spacing, useTheme } from "@/src/theme";
 
 type Client = { id: string; name: string; email: string; mobile: string; client_code: string; pan?: string; business_count?: number; request_count?: number };
 type Detail = {
@@ -111,6 +111,8 @@ export default function AdminClients() {
               ))}
               {!d.requests.length ? <Text style={{ color: colors.muted }}>No requests</Text> : null}
 
+              {openId ? <PricingPanel clientId={openId} /> : null}
+
               <Text style={s.section}>Invoices</Text>
               {d.invoices.map((inv) => (
                 <Card key={inv.id} style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
@@ -143,4 +145,120 @@ const useStyles = makeStyles((colors) => ({
   title: { color: colors.onSurface, fontSize: 22, fontWeight: "800", letterSpacing: -0.4 },
   avatar: { width: 40, height: 40, borderRadius: 13, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
   section: { color: colors.onSurface, fontSize: 15, fontWeight: "800", marginTop: 4 },
+}));
+
+// ---- Service & Pricing (client-specific private pricing) ----
+type Svc = { id: string; name: string; category: string; suggested_price: number };
+type Price = { id: string; service_id: string; service_name: string; fy: string; ay: string; amount: number; active: boolean; history?: { action: string; amount: number; at: string; by_name?: string }[] };
+type PricesResp = { prices: Price[]; services: Svc[]; fy_list: string[] };
+
+function PricingPanel({ clientId }: { clientId: string }) {
+  const { colors } = useTheme();
+  const ps = usePricingStyles();
+  const qc = useQueryClient();
+  const { show } = useToast();
+  const [svcQuery, setSvcQuery] = useState("");
+  const [svcId, setSvcId] = useState<string | null>(null);
+  const [fy, setFy] = useState<string | null>(null);
+  const [amount, setAmount] = useState("");
+  const [historyOf, setHistoryOf] = useState<Price | null>(null);
+
+  const data = useQuery<PricesResp>({ queryKey: ["client-prices", clientId], queryFn: () => api(`/admin/clients/${clientId}/prices`) });
+
+  const save = useMutation({
+    mutationFn: () => api(`/admin/clients/${clientId}/prices`, { method: "POST", body: { service_id: svcId, fy, amount: parseInt(amount, 10) } }),
+    onSuccess: () => {
+      setSvcId(null); setFy(null); setAmount(""); setSvcQuery("");
+      qc.invalidateQueries({ queryKey: ["client-prices", clientId] });
+      show("Price assigned to this client", "success");
+    },
+    onError: (e) => show(e instanceof Error ? e.message : "Could not save price", "error"),
+  });
+
+  const toggle = useMutation({
+    mutationFn: (p: Price) => api(`/admin/prices/${p.id}`, { method: "PUT", body: { active: !p.active } }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["client-prices", clientId] }); show("Pricing updated", "success"); },
+    onError: (e) => show(e instanceof Error ? e.message : "Could not update", "error"),
+  });
+
+  const svcs = (data.data?.services ?? []).filter((sv) => sv.name.toLowerCase().includes(svcQuery.toLowerCase()));
+  const fyList = data.data?.fy_list ?? [];
+  const selectedSvc = data.data?.services.find((sv) => sv.id === svcId);
+  const canSave = svcId && fy && amount.trim() && parseInt(amount, 10) >= 0;
+
+  return (
+    <View style={{ gap: 10 }}>
+      <Text style={{ color: colors.onSurface, fontSize: 15, fontWeight: "800", marginTop: 4 }}>Service &amp; Pricing (private)</Text>
+      <Text style={{ color: colors.muted, fontSize: 12 }}>Set custom prices per service, financial year &amp; assessment year. Only this client sees these prices.</Text>
+
+      <Card style={{ gap: 10 }}>
+        <Input value={svcQuery} onChangeText={setSvcQuery} placeholder="Search service to price…" testID="price-svc-search" />
+        {svcQuery.length > 0 && !selectedSvc ? (
+          <View style={{ gap: 6, maxHeight: 160 }}>
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 160 }}>
+              {svcs.slice(0, 12).map((sv) => (
+                <Pressable key={sv.id} onPress={() => { setSvcId(sv.id); setSvcQuery(sv.name); }} style={ps.svcRow} testID={`price-svc-${sv.name}`}>
+                  <Text style={{ color: colors.onSurface, flex: 1, fontWeight: "600", fontSize: 13 }}>{sv.name}</Text>
+                  <Text style={{ color: colors.muted, fontSize: 11, textTransform: "capitalize" }}>{sv.category.replace(/_/g, " ")}</Text>
+                </Pressable>
+              ))}
+              {!svcs.length ? <Text style={{ color: colors.muted, fontSize: 12 }}>No match</Text> : null}
+            </ScrollView>
+          </View>
+        ) : null}
+        {selectedSvc ? (
+          <>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Icon name="pricetag" size={15} color={colors.brand} />
+              <Text style={{ color: colors.onSurface, fontWeight: "700", flex: 1 }}>{selectedSvc.name}</Text>
+              <Pressable onPress={() => { setSvcId(null); setSvcQuery(""); }} testID="price-svc-clear"><Icon name="close-circle" size={18} color={colors.muted} /></Pressable>
+            </View>
+            <ChipRow items={fyList.map((f) => ({ key: f, label: f }))} value={fy ?? ""} onChange={setFy} testPrefix="price-fy" />
+            <Input value={amount} onChangeText={(v) => setAmount(v.replace(/\D/g, "").slice(0, 8))} keyboardType="number-pad" placeholder={`Amount (₹) — suggested ₹${selectedSvc.suggested_price}`} testID="price-amount-input" />
+            <Button label="Assign Price" icon="checkmark-circle" disabled={!canSave} loading={save.isPending} onPress={() => save.mutate()} testID="price-save-btn" />
+          </>
+        ) : null}
+      </Card>
+
+      {data.data?.prices.length ? (
+        data.data.prices.map((p) => (
+          <Card key={p.id} style={{ gap: 4 }} testID={`price-row-${p.id}`}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.onSurface, fontWeight: "700", fontSize: 13.5 }}>{p.service_name}</Text>
+                <Text style={{ color: colors.muted, fontSize: 11.5 }}>{p.fy} · {p.ay}</Text>
+              </View>
+              <Text style={{ color: colors.onSurface, fontWeight: "800", fontSize: 15 }}>₹{p.amount.toLocaleString("en-IN")}</Text>
+              <StatusBadge status={p.active ? "approved" : "cancelled"} label={p.active ? "Active" : "Inactive"} />
+            </View>
+            <View style={{ flexDirection: "row", gap: 14, marginTop: 2 }}>
+              <Pressable onPress={() => toggle.mutate(p)} testID={`price-toggle-${p.id}`}><Text style={{ color: p.active ? colors.error : colors.success, fontSize: 12, fontWeight: "700" }}>{p.active ? "Deactivate" : "Activate"}</Text></Pressable>
+              <Pressable onPress={() => setHistoryOf(p)} testID={`price-history-${p.id}`}><Text style={{ color: colors.brand, fontSize: 12, fontWeight: "700" }}>History ({p.history?.length ?? 0})</Text></Pressable>
+            </View>
+          </Card>
+        ))
+      ) : (
+        <Text style={{ color: colors.muted, fontSize: 12 }}>No prices assigned yet. Client cannot pay until a price is set.</Text>
+      )}
+
+      <Sheet visible={!!historyOf} onClose={() => setHistoryOf(null)} title="Pricing history">
+        <View style={{ gap: 8, paddingBottom: 20 }}>
+          {(historyOf?.history ?? []).slice().reverse().map((h, i) => (
+            <Card key={i} style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <View>
+                <Text style={{ color: colors.onSurface, fontWeight: "700", textTransform: "capitalize" }}>{h.action.replace(/_/g, " ")}</Text>
+                <Text style={{ color: colors.muted, fontSize: 11 }}>{h.by_name ?? "—"} · {new Date(h.at).toLocaleString("en-IN")}</Text>
+              </View>
+              <Text style={{ color: colors.onSurface, fontWeight: "800" }}>₹{h.amount.toLocaleString("en-IN")}</Text>
+            </Card>
+          ))}
+          {!(historyOf?.history ?? []).length ? <Text style={{ color: colors.muted }}>No history</Text> : null}
+        </View>
+      </Sheet>
+    </View>
+  );
+}
+
+const usePricingStyles = makeStyles((colors) => ({
+  svcRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: colors.divider },
 }));
