@@ -1,0 +1,47 @@
+{
+  "summary": "SEC-001 (OTP echo + purpose binding) and SEC-002 (admin perm gating) verification — 12/13 tests PASS, 1 SKIPPED (regression-only, non-blocking; /api/client/catalog is 404 — see note). Both security fixes VERIFIED. (a) POST /api/auth/forgot-password for demo@taxman.manoj returns 200 {ok:true,email} with NO dev_otp / otp / code field and no 6-digit code anywhere in the JSON body. Also verified for a random unknown email (same clean 200 shape, no info leak). (b) Purpose binding VERIFIED: registered sectest+<rand>@example.com, captured register dev_otp, then POST /api/auth/reset-password with that code returned 400 'This code cannot be used for this action.' — cross-purpose attack blocked. (c) Signup regression WORKS: /register echoes dev_otp; /verify-otp with that code returns access_token + user with status='active'; subsequent /login with new credentials succeeds. (d) Seeded logins REGRESSION OK: demo@taxman.manoj/Demo@123 (client, TM-000001), admin@taxman.manoj/Admin@123 (super_admin), staff@taxman.manoj/Staff@123 (accountant) all return tokens + user. (SEC-002) Perm gating on staff mutations VERIFIED: PATCH /api/admin/requests/{id} correctly returns 403 'Missing permission: manage_services' for the accountant staff (whose actual seeded perms are view_clients, edit_clients, view_documents, approve_documents, download_documents, manage_accounting, manage_payments — NO manage_services), proving require_perm is enforced. POST /api/admin/clients/{cid}/notes (needs view_clients) SUCCEEDS 200 for accountant; POST /api/admin/leads (needs edit_clients) SUCCEEDS 200; GET /api/admin/leads (needs view_clients) SUCCEEDS 200. Plain CLIENT (demo) token gets 403 on all five gated admin endpoints: PATCH /admin/requests/{id}, GET /admin/clients/{cid}/notes, POST /admin/clients/{cid}/notes, GET /admin/leads, POST /admin/leads (blocked at the router-level require_staff before hitting require_perm — correct defense-in-depth).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "seed data mismatch",
+        "issue": "Review request stated the accountant staff has 'view_clients+edit_clients+manage_services+manage_payments' but the seeded staff@taxman.manoj perms are ['view_clients','edit_clients','view_documents','approve_documents','download_documents','manage_accounting','manage_payments'] — no manage_services. Gating still works correctly (accountant is blocked from PATCH /admin/requests with 403 'Missing permission: manage_services'), but if the intent was for accountant to SUCCEED on PATCH /admin/requests, either (a) update seed to include manage_services, or (b) update the review-request expectation. Non-blocking for the security-fix verification itself."
+      },
+      {
+        "endpoint": "GET /api/client/catalog",
+        "issue": "Returns 404 'Not Found' — the client-side catalog endpoint appears missing or under a different path (admin /api/admin/catalog exists). Not a security-fix regression but noted while running the pricing 402 regression check; the test skipped gracefully. Iteration-3 test suite still exercises the 402/UPI unlock path via /api/client/requests directly."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_security_fixes.py",
+    "/app/test_reports/pytest/security_fixes_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: If accountant is expected to manage service requests, add 'manage_services' to the accountant seed permissions in security.py DEFAULT_PERMS or in the seed script for staff@taxman.manoj. Currently accountant PATCH /admin/requests is 403 (correct gating).",
+    "OPTIONAL: Investigate GET /api/client/catalog 404 — either add the client-side catalog route or update tests to use the correct path. Not related to SEC-001/SEC-002."
+  ],
+  "critical_code_review_comments": [
+    "SEC-001a fix is correctly implemented in routers/auth.py::_send_otp (lines 44-49): response dict only conditionally includes dev_otp when OTP_DEV_ECHO is true AND purpose != 'reset'. forgot-password calls _send_otp(..., 'reset'), so echo is impossible even in dev mode. Verified over the wire — clean {ok, email} shape.",
+    "SEC-001b (purpose binding) is correctly enforced in _consume_otp (line 58-59): if otp_doc.get('purpose') != purpose -> 400 'This code cannot be used for this action.'. verify_otp calls with purpose='register' (line 104), reset_password calls with purpose='reset' (line 189). Cross-purpose attempt returns the exact 400 message. Purpose is stamped on the OTP doc at issuance (_send_otp line 39).",
+    "SEC-002 admin gating: manage_request uses require_perm(user, 'manage_services'); add_internal_note & list_internal_notes use require_perm('view_clients'); list_leads uses require_perm('view_clients'); create_lead & update_lead use require_perm('edit_clients'). Router-level Depends(require_staff) blocks non-staff before permission checks — verified plain client gets 403 with 'Staff access only' on all five endpoints.",
+    "Rate limiter on /forgot-password is inherited via _send_otp (3 per 10 min per email) — good, prevents purpose-agnostic OTP flooding. Consider adding an IP-based limiter too since email-keyed limiter allows an attacker to burn a victim's OTP quota via forgot-password + register alternation (both go through _send_otp with different purposes, but same email key). Non-blocking.",
+    "Minor: _consume_otp checks expiry BEFORE attempts count and BEFORE purpose. If an attacker submits many wrong codes with a stale/expired OTP doc, they'll get 'OTP expired' instead of the attempts guard — harmless but slightly leaks OTP lifecycle. Non-blocking.",
+    "reset_password (line 187-191) does NOT check that the target account exists before updating password_hash. Since _consume_otp validates the email has a stored OTP purpose='reset' and forgot-password only stores an OTP if a user exists, this is safe today, but an explicit `if user found` guard would be defensive."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_security_fixes.py"
+  ],
+  "success_rate": {"backend": "92.3% (12/13, 1 skip non-blocking)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Ephemeral: 2 throwaway registrations (sectest+<uuid8>@example.com) — one used to verify cross-purpose OTP rejection (never activated, will expire in 10 min), one fully verified/activated via /verify-otp (harmless, leaves an active test user in DB). 1 internal note added to demo client (body='sec2 note'). 1 lead created (name='Sec2 Lead'). No seeded/production data mutated.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "SEC-001/SEC-002 verified. Test suite at /app/backend/tests/test_security_fixes.py runs in <5s with pytest tests/test_security_fixes.py -v. Note: staff@taxman.manoj accountant is seeded WITHOUT manage_services — tests account for this (accountant PATCH /admin/requests returns 403 which is treated as valid gating proof). Register OTPs still echo in the response when OTP_DEV_ECHO=true (by design); reset OTPs NEVER echo (SEC-001 fix). Purpose field is stamped on the otps collection doc at issuance and validated on consume.",
+  "rca_of_issue": "N/A — no bugs found in the two security fixes. Both SEC-001 (OTP no-echo for reset + purpose binding) and SEC-002 (require_perm on manage_request, notes, leads) are correctly implemented and verified end-to-end via the public preview URL. Two minor observations logged as non-blocking (seed permissions for accountant, and missing /api/client/catalog route)."
+}

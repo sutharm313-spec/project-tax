@@ -114,6 +114,7 @@ class NoteIn(BaseModel):
 
 @router.post("/clients/{client_id}/notes")
 async def add_internal_note(client_id: str, body: NoteIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "view_clients")
     note = {"client_id": client_id, "business_id": body.ref_id if body.context == "business" else None,
             "request_id": body.ref_id if body.context == "service" else None,
             "document_id": body.ref_id if body.context == "document" else None,
@@ -125,6 +126,7 @@ async def add_internal_note(client_id: str, body: NoteIn, user: CurrentUser = De
 
 @router.get("/clients/{client_id}/notes")
 async def list_internal_notes(client_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "view_clients")
     docs = await db[COLL["internal_notes"]].find({"client_id": client_id}).sort("created_at", -1).to_list(200)
     return {"notes": clean_list(docs)}
 
@@ -557,6 +559,7 @@ class ManageRequestIn(BaseModel):
 
 @router.patch("/requests/{request_id}")
 async def manage_request(request_id: str, body: ManageRequestIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     req = await db[COLL["requests"]].find_one({"_id": ObjectId(request_id)})
     if not req:
@@ -641,6 +644,7 @@ class LeadIn(BaseModel):
 
 @router.get("/leads")
 async def list_leads(user: CurrentUser = Depends(require_staff), status: Optional[str] = None):
+    require_perm(user, "view_clients")
     q = {"status": status} if status else {}
     docs = await db[COLL["leads"]].find(q).sort("created_at", -1).to_list(200)
     return {"leads": clean_list(docs)}
@@ -648,6 +652,7 @@ async def list_leads(user: CurrentUser = Depends(require_staff), status: Optiona
 
 @router.post("/leads")
 async def create_lead(body: LeadIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "edit_clients")
     doc = {**body.model_dump(), "created_at": now()}
     res = await db[COLL["leads"]].insert_one(doc)
     doc["_id"] = res.inserted_id
@@ -656,6 +661,7 @@ async def create_lead(body: LeadIn, user: CurrentUser = Depends(require_staff)):
 
 @router.patch("/leads/{lead_id}")
 async def update_lead(lead_id: str, body: LeadIn, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "edit_clients")
     data = body.model_dump()
     if data.get("status") == "converted":
         data["converted_at"] = now()

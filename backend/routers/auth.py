@@ -42,17 +42,21 @@ async def _send_otp(email: str, name: str, purpose: str) -> dict:
     )
     await email_otp(email, code, purpose)
     resp: dict = {"ok": True, "email": email}
-    if OTP_DEV_ECHO:
-        resp["dev_otp"] = code  # preview convenience only; disabled by OTP_DEV_ECHO=false in production
+    # Never echo reset OTPs (account-takeover risk); register/login OTPs may echo
+    # only in explicit dev/preview mode for automated testing convenience.
+    if OTP_DEV_ECHO and purpose != "reset":
+        resp["dev_otp"] = code
     return resp
 
 
-async def _consume_otp(email: str, code: str) -> dict:
+async def _consume_otp(email: str, code: str, purpose: str) -> dict:
     otp_doc = await db[COLL["otps"]].find_one({"email": email.lower()})
     if not otp_doc or otp_doc.get("expires_at", 0) < now().timestamp():
         raise HTTPException(status_code=400, detail="OTP expired. Request a new code.")
     if otp_doc.get("attempts", 0) >= 5:
         raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new code.")
+    if otp_doc.get("purpose") != purpose:
+        raise HTTPException(status_code=400, detail="This code cannot be used for this action.")
     if otp_doc.get("hash") != otp_hash(email, code):
         await db[COLL["otps"]].update_one({"_id": otp_doc["_id"]}, {"$inc": {"attempts": 1}})
         raise HTTPException(status_code=400, detail="Incorrect OTP")
@@ -97,7 +101,7 @@ class VerifyOtpIn(BaseModel):
 @router.post("/verify-otp")
 async def verify_otp(body: VerifyOtpIn):
     email_l = body.email.lower()
-    await _consume_otp(email_l, body.code.strip())
+    await _consume_otp(email_l, body.code.strip(), "register")
     user = await db.users.find_one_and_update({"email": email_l}, {"$set": {"status": "active"}})
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -182,7 +186,7 @@ class ResetIn(BaseModel):
 
 @router.post("/reset-password")
 async def reset_password(body: ResetIn):
-    await _consume_otp(body.email.lower(), body.code.strip())
+    await _consume_otp(body.email.lower(), body.code.strip(), "reset")
     await db.users.update_one({"email": body.email.lower()}, {"$set": {"password_hash": hash_password(body.new_password)}})
     return {"ok": True}
 
