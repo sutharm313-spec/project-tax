@@ -1,0 +1,177 @@
+{
+  "app_name": "taxman.manoj",
+  "personality": "1 iOS-Native Clean (with custom Deep Navy Fintech Palette)",
+  "personality_one_liner": "A precision-crafted professional compliance and tax portal blending banking-grade trust, frictionless client workflows, and cinematic glassmorphism.",
+  "color": {
+    "surface": "#0A0F1D",
+    "onSurface": "#F8FAFC",
+    "surfaceSecondary": "#111827",
+    "onSurfaceSecondary": "#94A3B8",
+    "surfaceTertiary": "#1E293B",
+    "onSurfaceTertiary": "#CBD5E1",
+    "surfaceInverse": "#FFFFFF",
+    "onSurfaceInverse": "#0F172A",
+    "brand": "#3B82F6",
+    "brandPrimary": "#2563EB",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#1D4ED8",
+    "onBrandSecondary": "#E0E7FF",
+    "brandTertiary": "#1E3A8A",
+    "onBrandTertiary": "#93C5FD",
+    "success": "#10B981",
+    "onSuccess": "#ECFDF5",
+    "warning": "#F59E0B",
+    "onWarning": "#FEF3C7",
+    "error": "#EF4444",
+    "onError": "#FEF2F2",
+    "info": "#3B82F6",
+    "onInfo": "#EFF6FF",
+    "border": "#334155",
+    "borderStrong": "#475569",
+    "divider": "#1E293B",
+    "muted": "#64748B",
+    "onBrand": "#FFFFFF"
+  },
+  "typography": {
+    "displayFontFamily": "PlusJakartaSans",
+    "textFontFamily": "Inter",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical breathing room, compact modular cards, and fixed bottom CTA with safe area clearance.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "2",
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use frosted glass header and tab bar over scrolling content",
+      "Apply glass cards on featured analytics and active compliance items"
+    ],
+    "dont's": [
+      "Never blur form inputs or text content",
+      "Never stack more than 2 blur surfaces"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Splash & Onboarding",
+      "purpose": "Animated brand intro followed by 4 value proposition slides with custom financial artwork.",
+      "states": {
+        "loading": "Centered logo pulse animation",
+        "empty": "N/A",
+        "error": "Retry connection button"
+      },
+      "layout": "Full bleed editorial carousel with dot indicators and sticky primary CTA."
+    },
+    {
+      "name": "Auth & OTP",
+      "purpose": "Secure email and password login with instant 6-digit OTP verification.",
+      "states": {
+        "loading": "Spinner inside action button",
+        "empty": "N/A",
+        "error": "Inline validation banner for invalid credentials"
+      },
+      "layout": "Centered form container with secure masked inputs and biometric prompt."
+    },
+    {
+      "name": "Home Dashboard",
+      "purpose": "Client command center featuring Action Center status cards, multi-business switcher, and quick metrics.",
+      "states": {
+        "loading": "Skeleton shimmer cards for action center and metrics",
+        "empty": "Friendly compliance checklist with start service CTA",
+        "error": "Reload banner with retry action"
+      },
+      "layout": "Vertical scroll with top sticky header, business switcher dropdown, horizontal action cards, and recent compliance timeline."
+    },
+    {
+      "name": "Services Marketplace",
+      "purpose": "Catalog of tax, GST, accounting, audit, and registration services with transparent pricing.",
+      "states": {
+        "loading": "Grid skeleton loaders",
+        "empty": "No services found in category",
+        "error": "Network error with retry trigger"
+      },
+      "layout": "Categorized pill filter row followed by 2-column service cards with instant request action."
+    },
+    {
+      "name": "Documents & Vault",
+      "purpose": "Secure document repository where viewing and downloading is locked until payment is verified.",
+      "states": {
+        "loading": "File list skeleton",
+        "empty": "No documents uploaded yet + Upload CTA",
+        "error": "Failed to sync vault state"
+      },
+      "layout": "Tabbed filter (All, Tax, GST, Legal) with locked badge indicators and upload drawer."
+    },
+    {
+      "name": "Payments & UPI Flow",
+      "purpose": "Invoices and fee clearance through UPI reference number submission and verification.",
+      "states": {
+        "loading": "Payment gateway verification spinner",
+        "empty": "All invoices paid successfully",
+        "error": "Payment verification failure notice"
+      },
+      "layout": "Invoice list cards with pay modal, QR code display, and UPI reference input field."
+    },
+    {
+      "name": "Profile & Admin Web Dashboard",
+      "purpose": "Client profile, language toggle (English/Hindi), and integrated desktop-optimized /admin route.",
+      "states": {
+        "loading": "Admin metrics skeleton",
+        "empty": "No leads or tickets pending",
+        "error": "Server sync error"
+      },
+      "layout": "Split-view admin analytics, client management table, and settings controls."
+    }
+  ],
+  "images": {
+    "brand_logo": {
+      "url": "https://images.unsplash.com/photo-1598432439250-0330f9130e14?auto=format&fit=crop&q=80&w=400",
+      "alt": "taxman.manoj professional emblem"
+    },
+    "onboarding_1": {
+      "light": "https://images.unsplash.com/photo-1586486855514-8c633cc6fd38?auto=format&fit=crop&q=80&w=800",
+      "dark": "https://images.unsplash.com/photo-1586486855514-8c633cc6fd38?auto=format&fit=crop&q=80&w=800",
+      "alt": "Precision tax compliance"
+    },
+    "onboarding_2": {
+      "light": "https://images.unsplash.com/photo-16863202/pexels-photo-6863202.jpeg?auto=format&fit=crop&q=80&w=800",
+      "dark": "https://images.unsplash.com/photo-16863202/pexels-photo-6863202.jpeg?auto=format&fit=crop&q=80&w=800",
+      "alt": "Secure document vault"
+    }
+  },
+  "instructions_to_main_agent": "Ensure the application strictly follows the deep navy / dark blue professional palette with crisp white text and subtle blue gradients. Implement both the mobile client portal and the desktop admin dashboard at the /admin route. Enforce payment verification lock on document downloads. Ensure all touch targets are >= 44x44pt and safe area insets are respected everywhere."
+}

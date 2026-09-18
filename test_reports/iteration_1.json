@@ -1,0 +1,36 @@
+{
+  "summary": "Backend regression suite for taxman.manoj. 30/32 tests passed, 2 skipped (paid-doc file-token verification path taken via ad-hoc manual test after fix). Two critical backend bugs were found and fixed by testing agent: (1) storage.py imported the non-existent `AsyncGridFSBucket` from gridfs — must use `motor.motor_asyncio.AsyncIOMotorGridFSBucket` since motor 3.3.1/pymongo 4.6.3 do not expose an async gridfs bucket in the gridfs package. This broke ALL document uploads and downloads (500). (2) routers/client_api.py `stream_file` imported `verify_file_token` from `security` but it lives in `storage` — every /api/files/{token} download returned 500. Both fixes verified end-to-end (upload, admin verify UPI, download unlocked file). All core flows validated: auth (register+verify with dev_otp, login, 5-attempt rate-limit, forgot/reset), client isolation (client B gets 404/empty on client A resources), document lock 402 when payment not verified, UPI initiate → 12-digit UTR (non-12-digit rejected) → admin approve → document unlocks, admin stats/clients/payments/reject/documents/unlock+audit/catalog/staff/leads/tickets/reports CSV/audit/search/settings, RBAC (staff accountant blocked from POST /admin/staff → 403; client blocked from all /admin/* → 403), catalog seeded 27+ services, upload before payment allowed and returns locked=true, replace document, notifications and tickets. No mocked APIs.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "storage.py (import)", "issue": "`from gridfs import AsyncGridFSBucket` fails on pymongo 4.6.3/motor 3.3.1 — use motor.motor_asyncio.AsyncIOMotorGridFSBucket (FIXED by testing agent).", "priority": "CRITICAL"},
+      {"endpoint": "GET /api/files/{token}", "issue": "client_api.py.stream_file imported `verify_file_token` from `security` — it is defined in `storage`. Every signed-file download 500'd (FIXED by testing agent).", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "notify.email_*", "issue": "Emergent managed email returns 422 'undeliverable_recipient' for @example.com/test emails. Flows swallow the failure so functionality is not blocked, but logs are noisy."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": ["/app/backend/tests/test_taxman_backend.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Verify main-agent-side that AsyncIOMotorGridFSBucket import in storage.py and the stream_file import fix in routers/client_api.py are the intended patches; if a version pin was planned (pymongo>=4.9 for pymongo.asynchronous.gridfs.AsyncGridFSBucket), decide whether to upgrade instead.",
+    "Consider guarding email sends behind allow-list or catch-all in preview so undeliverable_recipient responses don't clutter backend logs when registering test emails.",
+    "Optional: also expose /api/admin/staff GET permission for accountant if intended; currently POST is blocked (correct), but list is currently readable to any staff — confirm design intent."
+  ],
+  "critical_code_review_comments": [
+    "storage.py used a non-existent import — silent land mine that only surfaces at first document I/O.",
+    "client_api.stream_file crossed module boundaries incorrectly. Recommend adding a smoke test in CI that streams a seeded document to catch such regressions early.",
+    "pytest.ini forces `-n 2 --dist loadscope`. Because register/reset/isolation tests share cross-class state via `pytest.NEW_USER`, this fails when classes go to different workers; ran with `-n 0`. Consider a session-scoped fixture instead."
+  ],
+  "updated_files": [
+    "/app/backend/storage.py",
+    "/app/backend/routers/client_api.py",
+    "/app/backend/tests/test_taxman_backend.py",
+    "/app/backend/tests/__init__.py"
+  ],
+  "success_rate": {"backend": "94%", "frontend": "not tested"},
+  "seed_data_creation": "Tests create TEST_-prefixed catalog services, staff, leads, tickets, and a couple of ephemeral service requests for the demo client (using FY 2024-25). No production data was modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Suite lives at /app/backend/tests/test_taxman_backend.py. Run sequentially: `pytest tests/test_taxman_backend.py -n 0`. Skipped tests only skip when seeded ITR has no unlocked docs — that path was validated manually after the AsyncIOMotorGridFSBucket + verify_file_token fixes (file stream returns 200 application/pdf 403 bytes).",
+  "rca_of_issue": "Two silent import-time bugs prevented any real document I/O: (1) gridfs.AsyncGridFSBucket only exists in pymongo>=4.9 (as pymongo.asynchronous.gridfs); on motor 3.3.1 it must be AsyncIOMotorGridFSBucket. (2) verify_file_token is defined in backend/storage.py but stream_file imported it from security. Reproduction: POST /api/client/documents (multipart) → 500; GET /api/files/{token} → 500. Mitigation applied: replaced imports; restarted backend; verified end-to-end upload+admin-verify+download flow."
+}
