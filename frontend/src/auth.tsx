@@ -78,7 +78,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
       if ("requires_otp" in res && res.requires_otp) return { requiresOtp: true, email: res.email };
       if (res.access_token) await applySession(res);
-      return {};
+      return { user: res.user };
     },
     [applySession],
   );

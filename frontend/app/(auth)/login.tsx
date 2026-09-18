@@ -33,6 +33,7 @@ export default function Login() {
     try {
       const res = await login(identifier.trim(), password);
       if (res.requiresOtp) router.push({ pathname: "/(auth)/otp", params: { email: res.email ?? identifier, purpose: "register" } });
+      else if (res.user && res.user.role !== "client") router.replace("/admin");
       else router.replace("/(tabs)");
     } catch (e) {
       setError(e instanceof APIError ? e.message : "Could not sign in. Try again.");

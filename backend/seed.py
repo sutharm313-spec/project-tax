@@ -1,10 +1,34 @@
 # Demo data seeding (runs once on first startup, clearly labeled demo data).
+import os
+import secrets
 from datetime import timedelta
 
 from core import COLL, db, now
 from common import ay_for_fy
 from notify import notify
 from security import DEFAULT_PERMS, hash_password
+
+# Privileged seed credentials come from the environment so production can supply
+# strong, out-of-band values. In dev/preview (SEED_DEMO_ACCOUNTS=true) they fall
+# back to the documented demo passwords. In production, if no password is set we
+# generate a random one (printed once to logs) rather than shipping a known login.
+_DEMO = os.environ.get("SEED_DEMO_ACCOUNTS", "true").lower() == "true"
+
+
+def _seed_pw(env_key: str, demo_value: str) -> str:
+    val = os.environ.get(env_key)
+    if val:
+        return val
+    if _DEMO:
+        return demo_value
+    return secrets.token_urlsafe(18)
+
+
+ADMIN_EMAIL = os.environ.get("SEED_ADMIN_EMAIL", "admin@taxman.manoj")
+ADMIN_PASSWORD = _seed_pw("SEED_ADMIN_PASSWORD", "Admin@123")
+STAFF_PASSWORD = _seed_pw("SEED_STAFF_PASSWORD", "Staff@123")
+DEMO_PASSWORD = _seed_pw("SEED_CLIENT_PASSWORD", "Demo@123")
+
 
 MIN_PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
@@ -79,17 +103,21 @@ async def seed_if_empty() -> None:
                   "expiry_reminder_days": 30}}, upsert=True)
 
     admin = await db.users.insert_one({
-        "role": "super_admin", "name": "Manoj (Admin)", "email": "admin@taxman.manoj", "mobile": "919876543210",
-        "password_hash": hash_password("Admin@123"), "status": "active", "permissions": ["*"], "created_at": now()})
+        "role": "super_admin", "name": "Manoj (Admin)", "email": ADMIN_EMAIL, "mobile": "919876543210",
+        "password_hash": hash_password(ADMIN_PASSWORD), "status": "active", "permissions": ["*"], "created_at": now()})
     staff = await db.users.insert_one({
         "role": "accountant", "name": "Priya Sharma", "email": "staff@taxman.manoj", "mobile": "919812345678",
-        "password_hash": hash_password("Staff@123"), "status": "active",
+        "password_hash": hash_password(STAFF_PASSWORD), "status": "active",
         "permissions": DEFAULT_PERMS["accountant"], "created_at": now()})
     client = await db.users.insert_one({
         "role": "client", "name": "Demo Client", "email": "demo@taxman.manoj", "mobile": "919812000000",
-        "password_hash": hash_password("Demo@123"), "status": "active", "client_code": "TM-000001",
+        "password_hash": hash_password(DEMO_PASSWORD), "status": "active", "client_code": "TM-000001",
         "pan": "ABCDE1234F", "address": "12 Sample Street, Ahmedabad, Gujarat 380001", "language": "en",
         "notification_prefs": {"email": True, "whatsapp": True, "push": True}, "created_at": now()})
+    if not _DEMO:
+        import logging
+        logging.getLogger("taxman").warning(
+            "Seeded admin %s. Set SEED_ADMIN_PASSWORD in production; generated password: %s", ADMIN_EMAIL, ADMIN_PASSWORD)
     client_id = str(client.inserted_id)
 
     biz1 = await db[COLL["businesses"]].insert_one({"client_id": client_id, "name": "Demo Traders", "type": "proprietorship", "gstin": "24ABCDE1234F1Z5", "pan": "ABCDE1234F", "created_at": now()})

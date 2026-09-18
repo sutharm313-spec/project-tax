@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 5 security-hardening verification for SEC-001/SEC-003/SEC-004 — 25/26 tests PASS, 1 SKIPPED (payment-unlock full round-trip; skip cause = seed data has no unpaid request with an already-initiated payment record — SEC verification not affected). (SEC-001) All three demo logins work: admin@taxman.manoj/Admin@123 (super_admin), staff@taxman.manoj/Staff@123 (accountant), demo@taxman.manoj/Demo@123 (client, TM-000001) — every /api/auth/login returns access_token + user. Staff perms sanity: view_clients+edit_clients+view_documents+approve_documents+download_documents+manage_accounting+manage_payments; NO view_reports, NO manage_tickets — matches review-request expectation exactly. (SEC-003) Global InvalidId exception handler in server.py L24-27 verified: GET /api/admin/clients/notanid -> 404, GET /api/client/requests/xyz123 -> 404, POST /api/admin/payments/badid/status -> 404. Bonus sweep across admin/clients/@@bad@@, admin/tickets/notanid, client/requests/!!bad!!, admin/payments/xxxxx/verify: none 500, all clean 400/403/404. (SEC-004) Accountant permission matrix VERIFIED: GET /api/admin/stats -> 403 (needs view_reports), GET /api/admin/audit -> 403 (admin-only), GET /api/admin/tickets -> 403 (needs manage_tickets), GET /api/admin/documents -> 200 (has view_documents), GET /api/admin/requests -> 200 (has view_clients). Admin (super_admin '*') regression: all five endpoints -> 200. Client (demo) RBAC regression: all five endpoints -> 403. (Prior fix regression) POST /api/auth/forgot-password returns clean 200 with no dev_otp/otp/6-digit code in body; register-purpose OTP cannot be used at /api/auth/reset-password (400 'This code cannot be used for this action.'). (Core regression) POST /api/client/requests with a service+business+FY 2019-20 (no assigned price) returns 402 'Price not assigned yet…' — server-authoritative pricing gate holds. Payment-unlock full flow (upload doc -> 402 -> admin mark received -> 200 with file_token) SKIPPED because no unpaid request in demo seed has an initiated payment record (invoice-only, payment doc not yet created via /client/payments/initiate); the pieces are individually covered (402 gate + admin set_payment_status wiring + file_token issuance) elsewhere.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "seed data — unpaid requests missing payment records",
+        "issue": "None of the 6 payment_pending seeded requests for demo@taxman.manoj have an accompanying payment doc in /api/admin/payments (client hasn't initiated). This makes the end-to-end 'admin marks payment received -> unlock doc' round-trip skip in tests. Not a security fix regression; SEC-003/SEC-004 all verified. Consider seeding one payment_submitted request WITH a payment doc + one uploaded doc to enable full unlock coverage."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5_security.py",
+    "/app/test_reports/pytest/iteration5_results.xml"
+  ],
+  "action_items": [
+    "None blocking. OPTIONAL: enrich seed with a payment_submitted request that already has a payment doc + one uploaded document, so the full unlock round-trip test can pass (not skip). This is a coverage improvement, not a fix — SEC-003/SEC-004 are fully verified."
+  ],
+  "critical_code_review_comments": [
+    "SEC-003 handler placement (server.py L24-27) is correct: registered on the FastAPI app before routers hit InvalidId at ObjectId(...) construction; returns a JSONResponse 404 {detail:'Resource not found'}. Verified against all three targeted routes and a wider sweep — no 500s slip through.",
+    "SEC-004 admin_api.py: /stats (L32-34) requires view_reports; /documents (L421-423) requires view_documents; /requests (L537-539) requires view_clients; /tickets (L678-680) requires manage_tickets; /audit (L785-790) restricts to super_admin/admin explicitly. All five gate correctly against the accountant seeded perms. Router-level Depends(require_staff) on the whole /api/admin prefix (L24) provides defense-in-depth against clients — verified.",
+    "SEC-001 (seed.py env-driven with demo defaults when SEED_DEMO_ACCOUNTS!=false): preview keeps demo creds so the app is still usable. Recommendation for production deploy: set SEED_DEMO_ACCOUNTS=false and provide SEED_ADMIN/STAFF/CLIENT_PASSWORD env vars, and rotate JWT_SECRET (currently in /app/backend/.env). Not a preview issue.",
+    "OTP purpose binding still holds end-to-end: register-purpose OTP -> reset-password returns 400 with the intended cross-purpose rejection. forgot-password body verified to contain neither dev_otp/otp nor any 6-digit substring — even in dev echo mode."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5_security.py"
+  ],
+  "success_rate": {"backend": "96.2% (25/26, 1 non-blocking skip due to seed data, 0 failures)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "One throwaway registration (sectest+<uuid8>@example.com) for the cross-purpose OTP test — never activated, expires with the OTP. If the upload branch executed inside the unlock test, one small text doc could have been added to an unpaid demo request (verified: this branch did not run in the final pass — skip fired earlier). No production data mutated.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_iteration5_security.py -v. Uses EXPO_PUBLIC_BACKEND_URL from frontend/.env. Login body shape is {identifier,password}. Register requires {email,password,name,mobile}. All /api/admin/* is prefixed by Depends(require_staff) at router level (returns 403 for clients before permission checks). Accountant seed perms deliberately exclude view_reports/manage_tickets/manage_services — do not assume they can hit stats/audit/tickets. To enable full unlock test, seed a payment record for at least one unpaid request (currently there are 6 payment_pending requests but zero payment docs in admin/payments for demo user).",
+  "rca_of_issue": "N/A — no bugs found. All three security fixes (SEC-001 env-driven seed with demo defaults, SEC-003 global InvalidId->404 handler, SEC-004 require_perm on stats/audit/tickets/documents/requests) verified live over the public preview URL. The single skipped test is a data-availability limitation of the demo seed, not a code defect."
+}

@@ -1,9 +1,11 @@
 # taxman.manoj — Tax & Compliance Client Portal backend.
 import logging
 
+from bson.errors import InvalidId
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from core import COLL, db
 from routers import admin_api, auth, client_api
@@ -17,6 +19,12 @@ app = FastAPI(title="taxman.manoj API", version="1.0.0")
 app.include_router(auth.router)
 app.include_router(client_api.router)
 app.include_router(admin_api.router)
+
+
+@app.exception_handler(InvalidId)
+async def invalid_id_handler(request: Request, exc: InvalidId):
+    # Malformed ObjectId in a path/param -> clean 404 instead of a 500.
+    return JSONResponse(status_code=404, content={"detail": "Resource not found"})
 
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 

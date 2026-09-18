@@ -31,6 +31,7 @@ def _rx(q: str) -> dict:
 # ---------------- analytics ----------------
 @router.get("/stats")
 async def stats(user: CurrentUser = Depends(require_staff), fy: Optional[str] = None):
+    require_perm(user, "view_reports")
     rq: dict = {}
     if fy:
         rq["fy"] = fy
@@ -419,6 +420,7 @@ async def bookkeep_payment(payment_id: str, body: BookkeepIn, user: CurrentUser 
 # ---------------- documents review + manual unlock ----------------
 @router.get("/documents")
 async def list_documents(user: CurrentUser = Depends(require_staff), status: Optional[str] = None, request_id: Optional[str] = None):
+    require_perm(user, "view_documents")
     q: dict = {}
     if status:
         q["status"] = status
@@ -534,6 +536,7 @@ async def update_service(service_id: str, body: CatalogIn, user: CurrentUser = D
 # ---------------- requests management ----------------
 @router.get("/requests")
 async def all_requests(user: CurrentUser = Depends(require_staff), status: Optional[str] = None, fy: Optional[str] = None):
+    require_perm(user, "view_clients")
     q: dict = {}
     if status:
         q["status"] = status
@@ -674,6 +677,7 @@ async def update_lead(lead_id: str, body: LeadIn, user: CurrentUser = Depends(re
 # ---------------- tickets ----------------
 @router.get("/tickets")
 async def all_tickets(user: CurrentUser = Depends(require_staff), status: Optional[str] = None):
+    require_perm(user, "manage_tickets")
     q = {"status": status} if status else {}
     docs = await db[COLL["tickets"]].find(q).sort("updated_at", -1).to_list(200)
     out = []
@@ -780,6 +784,8 @@ async def reports(report_type: str, user: CurrentUser = Depends(require_staff)):
 # ---------------- audit + settings ----------------
 @router.get("/audit")
 async def audit_logs(user: CurrentUser = Depends(require_staff), limit: int = 100):
+    if user.role not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Only admins can view audit logs")
     docs = await db[COLL["audit"]].find({}).sort("created_at", -1).limit(min(limit, 500)).to_list(500)
     return {"logs": clean_list(docs)}
 
