@@ -49,6 +49,7 @@ Production-ready premium mobile-first client portal + secure web-based Admin/Sta
 - Bulk pricing: /admin/pricing screen sets one service's price across many selected clients+FY via /admin/prices/bulk.
 - Deadlines & document-expiry: /admin/deadlines screen create/list/soft-delete; POST /admin/deadlines/run-reminders (also on startup) notifies client + staff within reminder window (once/day). 
 - Verified by testing agent: 22/22 (fixed soft-deleted deadlines still listed).
+- Deadline Calendar: /admin/deadlines has List/Calendar toggle; month grid with prev/next, per-day urgency-coloured count badges (≤7d/≤30d/later), today highlight, tap-a-day detail sheet with delete.
 
 ## Backlog- P1: PDF invoice/receipt generation (currently CSV reports + on-screen invoices); document expiry reminders scheduler; recurring service auto-creation.
 - P1: real Razorpay/WhatsApp Cloud API/OCR wiring when user provides credentials (architecture + env placeholders ready).

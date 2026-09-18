@@ -7,7 +7,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api } from "@/src/api";
 import { Button, Card, ChipRow, EmptyState, Icon, Input, Sheet, SkeletonList, useToast } from "@/src/ui";
-import { makeStyles, spacing, useTheme } from "@/src/theme";
+import { makeStyles, radius, spacing, useTheme } from "@/src/theme";
 
 type Client = { id: string; name: string; client_code: string };
 type Deadline = { id: string; title: string; due_date: string; kind: string; is_expiry?: boolean; reminded_at?: string | null; client?: { name: string; client_code: string } | null };
@@ -17,6 +17,8 @@ const KINDS = [
   { key: "income_tax", label: "Income Tax" }, { key: "tds", label: "TDS" },
   { key: "audit", label: "Audit" }, { key: "expiry", label: "Doc Expiry" },
 ];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DOW = ["S", "M", "T", "W", "T", "F", "S"];
 
 export default function Deadlines() {
   const insets = useSafeAreaInsets();
@@ -31,6 +33,9 @@ export default function Deadlines() {
   const [isExpiry, setIsExpiry] = useState(false);
   const [clientId, setClientId] = useState<string | null>(null);
   const [clientQuery, setClientQuery] = useState("");
+  const [view, setView] = useState<"list" | "calendar">("list");
+  const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
   const list = useQuery<{ deadlines: Deadline[] }>({ queryKey: ["admin-deadlines"], queryFn: () => api("/admin/deadlines") });
   const clients = useQuery<{ clients: Client[] }>({ queryKey: ["admin-clients", ""], queryFn: () => api("/admin/clients") });
@@ -65,6 +70,19 @@ export default function Deadlines() {
       </View>
       <Button label="Add deadline / expiry" icon="add-circle" onPress={() => setOpen(true)} testID="deadline-new" style={{ marginTop: 12 }} />
 
+      <View style={{ marginTop: 12 }}>
+        <ChipRow items={[{ key: "list", label: "List" }, { key: "calendar", label: "Calendar" }]} value={view} onChange={(k) => setView(k as "list" | "calendar")} testPrefix="deadline-view" />
+      </View>
+
+      {view === "calendar" ? (
+        <MonthCalendar
+          deadlines={list.data?.deadlines ?? []}
+          cursor={monthCursor}
+          onPrev={() => setMonthCursor((c) => c.m === 0 ? { y: c.y - 1, m: 11 } : { y: c.y, m: c.m - 1 })}
+          onNext={() => setMonthCursor((c) => c.m === 11 ? { y: c.y + 1, m: 0 } : { y: c.y, m: c.m + 1 })}
+          onPickDay={setSelectedDay}
+        />
+      ) : (
       <View style={{ marginTop: 16, gap: 10 }}>
         {list.isLoading ? (
           <SkeletonList count={3} />
@@ -91,6 +109,23 @@ export default function Deadlines() {
           })
         )}
       </View>
+      )}
+
+      <Sheet visible={!!selectedDay} onClose={() => setSelectedDay(null)} title={selectedDay ? new Date(selectedDay).toDateString() : "Day"}>
+        <View style={{ gap: 8, paddingBottom: 20 }}>
+          {(list.data?.deadlines ?? []).filter((d) => d.due_date === selectedDay).map((d) => (
+            <Card key={d.id} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Icon name={d.is_expiry ? "shield-checkmark" : "alarm"} size={16} color={colors.brand} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.onSurface, fontWeight: "700" }}>{d.title}</Text>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>{d.client ? d.client.client_code : "all clients"} · {d.kind}</Text>
+              </View>
+              <Pressable onPress={() => remove.mutate(d.id)} testID={`cal-del-${d.id}`}><Icon name="trash" size={17} color={colors.muted} /></Pressable>
+            </Card>
+          ))}
+          {!(list.data?.deadlines ?? []).filter((d) => d.due_date === selectedDay).length ? <Text style={{ color: colors.muted }}>No deadlines on this day.</Text> : null}
+        </View>
+      </Sheet>
 
       <Sheet visible={open} onClose={reset} title="Add deadline / expiry">
         <ScrollView style={{ maxHeight: 560 }} showsVerticalScrollIndicator={false}>
@@ -139,4 +174,87 @@ const useStyles = makeStyles((colors) => ({
   lbl: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 2 },
   row: { paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: colors.divider },
   dot: { width: 38, height: 38, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+}));
+
+// ---- Month calendar view ----
+function MonthCalendar({ deadlines, cursor, onPrev, onNext, onPickDay }: {
+  deadlines: Deadline[];
+  cursor: { y: number; m: number };
+  onPrev: () => void; onNext: () => void; onPickDay: (iso: string) => void;
+}) {
+  const { colors } = useTheme();
+  const c = useCalStyles();
+  const first = new Date(cursor.y, cursor.m, 1);
+  const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
+  const lead = first.getDay();
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  const byDay: Record<string, Deadline[]> = {};
+  for (const d of deadlines) {
+    const [y, m] = d.due_date.split("-").map((x) => parseInt(x, 10));
+    if (y === cursor.y && m === cursor.m + 1) (byDay[d.due_date] ??= []).push(d);
+  }
+
+  const cells: (number | null)[] = [...Array(lead).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const iso = (day: number) => `${cursor.y}-${String(cursor.m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const urgencyColor = (list: Deadline[]) => {
+    const min = Math.min(...list.map((d) => Math.ceil((new Date(d.due_date).getTime() - Date.now()) / 86400000)));
+    return min <= 7 ? colors.error : min <= 30 ? colors.warning : colors.brand;
+  };
+
+  return (
+    <View style={{ marginTop: 14 }}>
+      <View style={c.head}>
+        <Pressable onPress={onPrev} style={c.navBtn} testID="cal-prev"><Icon name="chevron-back" size={18} color={colors.onSurface} /></Pressable>
+        <Text style={c.monthLabel}>{MONTHS[cursor.m]} {cursor.y}</Text>
+        <Pressable onPress={onNext} style={c.navBtn} testID="cal-next"><Icon name="chevron-forward" size={18} color={colors.onSurface} /></Pressable>
+      </View>
+      <View style={c.dowRow}>
+        {DOW.map((d, i) => <Text key={i} style={c.dow}>{d}</Text>)}
+      </View>
+      <View style={c.grid}>
+        {cells.map((day, i) => {
+          if (day === null) return <View key={i} style={c.cell} />;
+          const dIso = iso(day);
+          const items = byDay[dIso] ?? [];
+          const isToday = dIso === todayIso;
+          return (
+            <Pressable key={i} style={[c.cell, c.dayCell, isToday && { borderColor: colors.brand, borderWidth: 1.5 }]} onPress={() => onPickDay(dIso)} testID={`cal-day-${day}`}>
+              <Text style={[c.dayNum, isToday && { color: colors.brand, fontWeight: "800" }]}>{day}</Text>
+              {items.length ? (
+                <View style={[c.badge, { backgroundColor: urgencyColor(items) }]}>
+                  <Text style={c.badgeText}>{items.length}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </View>
+      <View style={c.legend}>
+        {[["≤7d", colors.error], ["≤30d", colors.warning], ["later", colors.brand]].map(([l, col]) => (
+          <View key={l as string} style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+            <View style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: col as string }} />
+            <Text style={{ color: colors.muted, fontSize: 11 }}>{l as string}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+const useCalStyles = makeStyles((colors) => ({
+  head: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  navBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
+  monthLabel: { color: colors.onSurface, fontSize: 16, fontWeight: "800" },
+  dowRow: { flexDirection: "row" },
+  dow: { flex: 1, textAlign: "center", color: colors.muted, fontSize: 11, fontWeight: "700", paddingVertical: 6 },
+  grid: { flexDirection: "row", flexWrap: "wrap" },
+  cell: { width: `${100 / 7}%`, aspectRatio: 1, padding: 3 },
+  dayCell: { borderRadius: radius.sm, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center", margin: 1 },
+  dayNum: { color: colors.onSurface, fontSize: 13, fontWeight: "600" },
+  badge: { minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: "center", justifyContent: "center", marginTop: 2 },
+  badgeText: { color: "#FFFFFF", fontSize: 10, fontWeight: "800" },
+  legend: { flexDirection: "row", gap: 16, justifyContent: "center", marginTop: 12 },
 }));
