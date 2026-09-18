@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api, BACKEND } from "@/src/api";
-import { Button, Card, ChipRow, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
+import { Button, Card, ChipRow, DeleteButton, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
 import { makeStyles, spacing, useTheme } from "@/src/theme";
 
 type Pay = {
@@ -90,6 +90,16 @@ export default function AdminPayments() {
                     {p.client?.mobile ? <Text style={{ color: colors.muted, fontSize: 11 }}>{p.client.mobile}{p.client.email ? ` · ${p.client.email}` : ""}</Text> : null}
                   </View>
                   <StatusBadge status={p.status} label={p.status_label} />
+                  <DeleteButton
+                    testID={`delete-payment-${p.id}`}
+                    title="Delete this payment?"
+                    onConfirm={async () => {
+                      await api(`/admin/payments/${p.id}`, { method: "DELETE" });
+                      qc.invalidateQueries({ queryKey: ["admin-payments"] });
+                      qc.invalidateQueries({ queryKey: ["admin-stats"] });
+                      show("Payment deleted", "success");
+                    }}
+                  />
                 </View>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                   <Text style={{ color: colors.onSurface, fontWeight: "800", fontSize: 19 }}>₹{p.amount.toLocaleString("en-IN")}</Text>

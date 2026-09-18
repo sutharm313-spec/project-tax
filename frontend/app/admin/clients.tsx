@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api } from "@/src/api";
-import { Button, Card, ChipRow, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
+import { Button, Card, ChipRow, DeleteButton, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
 import { makeStyles, radius, spacing, useTheme } from "@/src/theme";
 
 type Client = { id: string; name: string; email: string; mobile: string; client_code: string; pan?: string; business_count?: number; request_count?: number };
@@ -91,6 +91,20 @@ export default function AdminClients() {
                 <Text style={{ color: colors.onSurface, fontWeight: "800" }}>{d.client.client_code}</Text>
                 <Text style={{ color: colors.muted, fontSize: 12.5 }}>{d.client.email} · {d.client.mobile}</Text>
                 <Text style={{ color: colors.muted, fontSize: 12.5 }}>PAN: {d.client.pan || "—"}</Text>
+                <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 4 }}>
+                  <DeleteButton
+                    testID={`delete-client-${openId}`}
+                    title={`Delete ${d.client.name}?`}
+                    message="This client and all their businesses, requests, payments, invoices and documents will be removed from every list and total. Data is retained and can be restored by support."
+                    onConfirm={async () => {
+                      await api(`/admin/clients/${openId}`, { method: "DELETE" });
+                      qc.invalidateQueries({ queryKey: ["admin-clients"] });
+                      qc.invalidateQueries({ queryKey: ["admin-stats"] });
+                      setOpenId(null);
+                      show("Client deleted", "success");
+                    }}
+                  />
+                </View>
               </Card>
 
               <Text style={s.section}>Businesses ({d.businesses.length})</Text>

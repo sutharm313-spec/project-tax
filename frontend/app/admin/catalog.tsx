@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api } from "@/src/api";
-import { Button, Card, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
+import { Button, Card, DeleteButton, EmptyState, ErrorState, Icon, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
 import { makeStyles, spacing, useTheme } from "@/src/theme";
 
 type Svc = { id: string; name: string; category: string; price: number; active: boolean; estimated_days: number; description: string; required_docs: { key: string; name: string; required: boolean }[] };
@@ -80,6 +80,17 @@ export default function AdminCatalog() {
                   </View>
                   <Text style={{ color: colors.brand, fontWeight: "800" }}>₹{s.price.toLocaleString("en-IN")}</Text>
                   <StatusBadge status={s.active ? "active" : "closed"} label={s.active ? "Active" : "Hidden"} />
+                  <DeleteButton
+                    testID={`delete-service-${s.id}`}
+                    title={`Delete ${s.name}?`}
+                    onConfirm={async () => {
+                      await api(`/admin/catalog/${s.id}`, { method: "DELETE" });
+                      qc.invalidateQueries({ queryKey: ["admin-catalog"] });
+                      qc.invalidateQueries({ queryKey: ["catalog"] });
+                      qc.invalidateQueries({ queryKey: ["admin-stats"] });
+                      show("Service deleted", "success");
+                    }}
+                  />
                 </View>
                 <Pressable onPress={() => toggle.mutate(s)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }} testID={`toggle-${s.id}`}>
                   <Icon name={s.active ? "eye" : "eye-off"} size={14} color={colors.muted} />

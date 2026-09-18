@@ -51,6 +51,12 @@ Production-ready premium mobile-first client portal + secure web-based Admin/Sta
 - Verified by testing agent: 22/22 (fixed soft-deleted deadlines still listed).
 - Deadline Calendar: /admin/deadlines has List/Calendar toggle; month grid with prev/next, per-day urgency-coloured count badges (≤7d/≤30d/later), today highlight, tap-a-day detail sheet with delete.
 
+## Implemented (2026-09-18e) — Admin delete (soft-delete) + real-time dashboard
+- Delete (confirm sheet) on Admin: Clients (cascades businesses/requests/invoices/payments/documents/prices/recurring/deadlines/tickets/notifications; deleted client can't log in), Catalog services, Payments (re-locks linked request+invoice if it was verifying), Service Requests (cascades invoices/payments/documents), CRM Leads.
+- All SOFT deletes (deleted_at; recoverable). Every read (admin stats + all admin lists + client overview/requests/payments/invoices/documents) excludes deleted via _alive(), so dashboard counts/totals update in real time (react-query invalidates admin-stats + affected keys).
+- Fixed pre-existing revenue bug: stats + invoice PDF count payment status in (verified, received).
+- Verified by testing agent: 16/16.
+
 ## Backlog- P1: PDF invoice/receipt generation (currently CSV reports + on-screen invoices); document expiry reminders scheduler; recurring service auto-creation.
 - P1: real Razorpay/WhatsApp Cloud API/OCR wiring when user provides credentials (architecture + env placeholders ready).
 - P2: dedicated GST/Audit/TDS structured workspaces (basic notes/workspace JSON in place); push notifications (on request); 2FA.

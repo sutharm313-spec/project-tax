@@ -137,6 +137,8 @@ async def login(body: LoginIn, request: Request):
     user = await db.users.find_one(query)
     if not user or not verify_password(body.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.get("deleted_at"):
+        raise HTTPException(status_code=403, detail="This account is no longer active.")
     if user.get("status") == "unverified":
         out = await _send_otp(user["email"], user.get("name", ""), "register")
         return {**out, "requires_otp": True}

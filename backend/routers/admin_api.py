@@ -28,6 +28,82 @@ def _rx(q: str) -> dict:
     return {"$regex": re.escape(q.strip()), "$options": "i"}
 
 
+# Soft-delete convention: deleted records get a deleted_at timestamp and are
+# excluded from every count, list and total. Data is never destroyed.
+ALIVE = {"deleted_at": {"$exists": False}}
+
+
+def _alive(extra: Optional[dict] = None) -> dict:
+    return {**(extra or {}), "deleted_at": {"$exists": False}}
+
+
+@router.delete("/clients/{client_id}")
+async def delete_client(client_id: str, user: CurrentUser = Depends(require_staff)):
+    if user.role not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Only admins can delete clients")
+    doc = await db.users.find_one({"_id": ObjectId(client_id), "role": "client"})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Client not found")
+    stamp = {"$set": {"deleted_at": now()}}
+    await db.users.update_one({"_id": doc["_id"]}, stamp)
+    # cascade so all counts/lists/totals drop this client's data
+    for c in ["businesses", "requests", "invoices", "payments", "documents", "client_prices", "recurring", "deadlines", "tickets", "notifications"]:
+        await db[COLL[c]].update_many({"client_id": client_id}, stamp)
+    await audit(user.id, user.role, "client_deleted", f"client:{client_id}", {"name": doc.get("name")})
+    return {"ok": True, "deleted": "client"}
+
+
+@router.delete("/catalog/{service_id}")
+async def delete_service(service_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    res = await db[COLL["catalog"]].update_one({"_id": ObjectId(service_id)}, {"$set": {"deleted_at": now(), "active": False}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Service not found")
+    await audit(user.id, user.role, "service_deleted", f"service:{service_id}")
+    return {"ok": True, "deleted": "service"}
+
+
+@router.delete("/payments/{payment_id}")
+async def delete_payment(payment_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_payments")
+    pay = await db[COLL["payments"]].find_one({"_id": ObjectId(payment_id)})
+    if not pay:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    await db[COLL["payments"]].update_one({"_id": pay["_id"]}, {"$set": {"deleted_at": now()}})
+    # if this was the verifying payment, re-lock the linked request/invoice
+    if pay.get("status") in ("verified", "received") and pay.get("request_id"):
+        await db[COLL["requests"]].update_one({"_id": ObjectId(pay["request_id"])}, {"$set": {"payment_status": "pending", "status": "payment_pending"}})
+        if pay.get("invoice_id"):
+            await db[COLL["invoices"]].update_one({"_id": ObjectId(pay["invoice_id"])}, {"$set": {"status": "unpaid"}})
+    await audit(user.id, user.role, "payment_deleted", f"payment:{payment_id}", {"amount": pay.get("amount"), "utr": pay.get("utr")})
+    return {"ok": True, "deleted": "payment"}
+
+
+@router.delete("/requests/{request_id}")
+async def delete_request(request_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "manage_services")
+    req = await db[COLL["requests"]].find_one({"_id": ObjectId(request_id)})
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    stamp = {"$set": {"deleted_at": now()}}
+    await db[COLL["requests"]].update_one({"_id": req["_id"]}, stamp)
+    await db[COLL["invoices"]].update_many({"request_id": request_id}, stamp)
+    await db[COLL["payments"]].update_many({"request_id": request_id}, stamp)
+    await db[COLL["documents"]].update_many({"request_id": request_id}, stamp)
+    await audit(user.id, user.role, "request_deleted", f"request:{request_id}", {"service": req.get("service_name")})
+    return {"ok": True, "deleted": "request"}
+
+
+@router.delete("/leads/{lead_id}")
+async def delete_lead(lead_id: str, user: CurrentUser = Depends(require_staff)):
+    require_perm(user, "edit_clients")
+    res = await db[COLL["leads"]].update_one({"_id": ObjectId(lead_id)}, {"$set": {"deleted_at": now()}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    await audit(user.id, user.role, "lead_deleted", f"lead:{lead_id}")
+    return {"ok": True, "deleted": "lead"}
+
+
 # ---------------- analytics ----------------
 @router.get("/stats")
 async def stats(user: CurrentUser = Depends(require_staff), fy: Optional[str] = None):
@@ -35,20 +111,20 @@ async def stats(user: CurrentUser = Depends(require_staff), fy: Optional[str] = 
     rq: dict = {}
     if fy:
         rq["fy"] = fy
-    requests = await db[COLL["requests"]].find(rq).to_list(1000)
-    invoices = await db[COLL["invoices"]].find(rq if not fy else {}).to_list(1000)
-    payments = await db[COLL["payments"]].find({}).to_list(1000)
-    clients = await db.users.count_documents({"role": "client"})
-    new_clients = await db.users.count_documents({"role": "client", "created_at": {"$gte": now() - timedelta(days=30)}})
-    docs = await db[COLL["documents"]].find({}).to_list(1000)
-    tickets = await db[COLL["tickets"]].count_documents({"status": {"$in": ["open", "in_progress", "waiting_for_client"]}})
+    requests = await db[COLL["requests"]].find(_alive(rq)).to_list(1000)
+    invoices = await db[COLL["invoices"]].find(_alive(rq if not fy else {})).to_list(1000)
+    payments = await db[COLL["payments"]].find(_alive()).to_list(1000)
+    clients = await db.users.count_documents(_alive({"role": "client"}))
+    new_clients = await db.users.count_documents(_alive({"role": "client", "created_at": {"$gte": now() - timedelta(days=30)}}))
+    docs = await db[COLL["documents"]].find(_alive()).to_list(1000)
+    tickets = await db[COLL["tickets"]].count_documents(_alive({"status": {"$in": ["open", "in_progress", "waiting_for_client"]}}))
     revenue_by_month: dict[str, float] = {}
     for p in payments:
-        if p.get("status") == "verified" and p.get("verified_at"):
+        if p.get("status") in ("verified", "received") and p.get("verified_at"):
             m = p["verified_at"].strftime("%Y-%m")
             revenue_by_month[m] = revenue_by_month.get(m, 0) + p.get("amount", 0)
     client_growth: dict[str, int] = {}
-    async for c in db.users.find({"role": "client"}, {"created_at": 1}):
+    async for c in db.users.find(_alive({"role": "client"}), {"created_at": 1}):
         if c.get("created_at"):
             m = c["created_at"].strftime("%Y-%m")
             client_growth[m] = client_growth.get(m, 0) + 1
@@ -72,7 +148,7 @@ async def stats(user: CurrentUser = Depends(require_staff), fy: Optional[str] = 
             "total_clients": clients, "new_clients": new_clients,
             "active_services": sum(1 for r in requests if r.get("status") in ("active", "in_progress", "under_review")),
             "pending_payments": pending_amount,
-            "revenue": sum(p.get("amount", 0) for p in payments if p.get("status") == "verified"),
+            "revenue": sum(p.get("amount", 0) for p in payments if p.get("status") in ("verified", "received")),
             "pending_documents": sum(1 for d in docs if d.get("status") == "uploaded"),
             "completed_services": sum(1 for r in requests if r.get("status") == "completed"),
             "open_tickets": tickets,
@@ -92,7 +168,7 @@ async def stats(user: CurrentUser = Depends(require_staff), fy: Optional[str] = 
 @router.get("/clients")
 async def list_clients(user: CurrentUser = Depends(require_staff), q: Optional[str] = None, require_perm_dep=None):
     require_perm(user, "view_clients")
-    query = {"role": "client"}
+    query = _alive({"role": "client"})
     if q:
         query["$or"] = [{"name": _rx(q)}, {"email": _rx(q)}, {"mobile": _rx(q)}, {"client_code": _rx(q)}, {"pan": _rx(q)}]
     docs = await db.users.find(query, {"password_hash": 0}).sort("created_at", -1).limit(200).to_list(200)
@@ -138,10 +214,10 @@ async def client_detail(client_id: str, user: CurrentUser = Depends(require_staf
     doc = await db.users.find_one({"_id": ObjectId(client_id), "role": "client"}, {"password_hash": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Client not found")
-    businesses = await db[COLL["businesses"]].find({"client_id": client_id}).to_list(50)
-    requests = await db[COLL["requests"]].find({"client_id": client_id}).sort("created_at", -1).to_list(200)
-    invoices = await db[COLL["invoices"]].find({"client_id": client_id}).sort("created_at", -1).to_list(200)
-    docs_count = await db[COLL["documents"]].count_documents({"client_id": client_id})
+    businesses = await db[COLL["businesses"]].find(_alive({"client_id": client_id})).to_list(50)
+    requests = await db[COLL["requests"]].find(_alive({"client_id": client_id})).sort("created_at", -1).to_list(200)
+    invoices = await db[COLL["invoices"]].find(_alive({"client_id": client_id})).sort("created_at", -1).to_list(200)
+    docs_count = await db[COLL["documents"]].count_documents(_alive({"client_id": client_id}))
     notes = await db[COLL["internal_notes"]].find({"client_id": client_id}).sort("created_at", -1).to_list(100)
     prices = await db[COLL["client_prices"]].find({"client_id": client_id}).sort("created_at", -1).to_list(300)
     return {"client": clean(doc), "businesses": clean_list(businesses), "requests": clean_list(requests),
@@ -279,7 +355,7 @@ async def list_payments(user: CurrentUser = Depends(require_staff), status: Opti
     q: dict = {}
     if status:
         q["status"] = status
-    docs = await db[COLL["payments"]].find(q).sort("created_at", -1).limit(200).to_list(200)
+    docs = await db[COLL["payments"]].find(_alive(q)).sort("created_at", -1).limit(200).to_list(200)
     out = []
     for p in docs:
         item = enrich_payment(clean(p, extra_drop=["screenshot_grid_id"]))
@@ -426,7 +502,7 @@ async def list_documents(user: CurrentUser = Depends(require_staff), status: Opt
         q["status"] = status
     if request_id:
         q["request_id"] = request_id
-    docs = await db[COLL["documents"]].find(q).sort("created_at", -1).limit(300).to_list(300)
+    docs = await db[COLL["documents"]].find(_alive(q)).sort("created_at", -1).limit(300).to_list(300)
     out = []
     for d in docs:
         item = clean(d, extra_drop=["grid_id"])
@@ -511,7 +587,7 @@ class CatalogIn(BaseModel):
 
 @router.get("/catalog")
 async def admin_catalog(user: CurrentUser = Depends(require_staff)):
-    docs = await db[COLL["catalog"]].find({}).sort([("category", 1), ("name", 1)]).to_list(300)
+    docs = await db[COLL["catalog"]].find(_alive()).sort([("category", 1), ("name", 1)]).to_list(300)
     return {"services": clean_list(docs)}
 
 
@@ -542,7 +618,7 @@ async def all_requests(user: CurrentUser = Depends(require_staff), status: Optio
         q["status"] = status
     if fy:
         q["fy"] = fy
-    docs = await db[COLL["requests"]].find(q).sort("created_at", -1).limit(300).to_list(300)
+    docs = await db[COLL["requests"]].find(_alive(q)).sort("created_at", -1).limit(300).to_list(300)
     out = []
     for r in docs:
         item = clean(r)
@@ -648,7 +724,7 @@ class LeadIn(BaseModel):
 @router.get("/leads")
 async def list_leads(user: CurrentUser = Depends(require_staff), status: Optional[str] = None):
     require_perm(user, "view_clients")
-    q = {"status": status} if status else {}
+    q = _alive({"status": status} if status else {})
     docs = await db[COLL["leads"]].find(q).sort("created_at", -1).to_list(200)
     return {"leads": clean_list(docs)}
 
@@ -678,7 +754,7 @@ async def update_lead(lead_id: str, body: LeadIn, user: CurrentUser = Depends(re
 @router.get("/tickets")
 async def all_tickets(user: CurrentUser = Depends(require_staff), status: Optional[str] = None):
     require_perm(user, "manage_tickets")
-    q = {"status": status} if status else {}
+    q = _alive({"status": status} if status else {})
     docs = await db[COLL["tickets"]].find(q).sort("updated_at", -1).to_list(200)
     out = []
     for t in docs:
@@ -853,7 +929,7 @@ class RecurringIn(BaseModel):
 @router.get("/recurring")
 async def list_recurring(user: CurrentUser = Depends(require_staff)):
     require_perm(user, "manage_services")
-    docs = await db[COLL["recurring"]].find({}).sort("next_due", 1).to_list(300)
+    docs = await db[COLL["recurring"]].find(_alive()).sort("next_due", 1).to_list(300)
     out = []
     for r in docs:
         item = clean(r)

@@ -51,17 +51,17 @@ def _doc_view(doc: dict, request_map: dict[str, dict]) -> dict:
 # ---------------- overview / dashboard ----------------
 @router.get("/client/overview")
 async def overview(user: CurrentUser = Depends(get_current_user), business_id: Optional[str] = None, fy: Optional[str] = None):
-    base_q: dict = {"client_id": user.id}
+    base_q: dict = {"client_id": user.id, "deleted_at": {"$exists": False}}
     if business_id:
         base_q["business_id"] = business_id
     if fy:
         base_q["fy"] = fy
-    businesses = await db[COLL["businesses"]].find({"client_id": user.id}).sort("created_at", 1).to_list(50)
+    businesses = await db[COLL["businesses"]].find({"client_id": user.id, "deleted_at": {"$exists": False}}).sort("created_at", 1).to_list(50)
     requests = await db[COLL["requests"]].find(base_q).sort("created_at", -1).to_list(200)
     request_map = {str(r["_id"]): r for r in requests}
     docs = await db[COLL["documents"]].find(base_q).sort("created_at", -1).to_list(500)
     invoices = await db[COLL["invoices"]].find({**base_q, "status": {"$in": ["unpaid", "partial"]}}).to_list(100)
-    deadline_list = await db[COLL["deadlines"]].find({"$or": [{"client_id": user.id}, {"client_id": None}]}).sort("due_date", 1).to_list(50)
+    deadline_list = await db[COLL["deadlines"]].find({"$or": [{"client_id": user.id}, {"client_id": None}], "deleted_at": {"$exists": False}}).sort("due_date", 1).to_list(50)
     notifs = await db[COLL["notifications"]].find({"user_id": user.id}).sort("created_at", -1).limit(5).to_list(5)
     unread = await db[COLL["notifications"]].count_documents({"user_id": user.id, "read": False})
     open_tickets = await db[COLL["tickets"]].count_documents({"client_id": user.id, "status": {"$in": ["open", "in_progress", "waiting_for_client"]}})
@@ -236,7 +236,7 @@ async def create_request(body: RequestIn, user: CurrentUser = Depends(get_curren
 @router.get("/client/requests")
 async def list_requests(user: CurrentUser = Depends(get_current_user), business_id: Optional[str] = None,
                         fy: Optional[str] = None, status: Optional[str] = None):
-    q: dict = {"client_id": user.id}
+    q: dict = {"client_id": user.id, "deleted_at": {"$exists": False}}
     if business_id:
         q["business_id"] = business_id
     if fy:
@@ -294,7 +294,7 @@ async def cancel_request(request_id: str, user: CurrentUser = Depends(get_curren
 @router.get("/client/documents")
 async def list_documents(user: CurrentUser = Depends(get_current_user), business_id: Optional[str] = None,
                          fy: Optional[str] = None, request_id: Optional[str] = None):
-    q: dict = {"client_id": user.id}
+    q: dict = {"client_id": user.id, "deleted_at": {"$exists": False}}
     if business_id:
         q["business_id"] = business_id
     if fy:
@@ -497,7 +497,7 @@ async def upload_payment_screenshot(payment_id: str, file: UploadFile, user: Cur
 
 @router.get("/client/payments")
 async def list_payments(user: CurrentUser = Depends(get_current_user), status: Optional[str] = None):
-    q: dict = {"client_id": user.id}
+    q: dict = {"client_id": user.id, "deleted_at": {"$exists": False}}
     if status:
         q["status"] = status
     docs = await db[COLL["payments"]].find(q).sort("created_at", -1).to_list(200)
@@ -506,7 +506,7 @@ async def list_payments(user: CurrentUser = Depends(get_current_user), status: O
 
 @router.get("/client/invoices")
 async def list_invoices(user: CurrentUser = Depends(get_current_user), status: Optional[str] = None):
-    q: dict = {"client_id": user.id}
+    q: dict = {"client_id": user.id, "deleted_at": {"$exists": False}}
     if status:
         q["status"] = status
     docs = await db[COLL["invoices"]].find(q).sort("created_at", -1).to_list(200)
@@ -525,7 +525,7 @@ async def _invoice_pdf_bytes(invoice: dict) -> bytes:
     if invoice.get("payment_id"):
         payment = await db[COLL["payments"]].find_one({"_id": ObjectId(invoice["payment_id"])})
     elif invoice.get("request_id"):
-        payment = await db[COLL["payments"]].find_one({"request_id": invoice["request_id"], "status": "verified"}, sort=[("created_at", -1)])
+        payment = await db[COLL["payments"]].find_one({"request_id": invoice["request_id"], "status": {"$in": ["verified", "received"]}}, sort=[("created_at", -1)])
     return build_invoice_pdf(invoice, client, business, settings, paid, payment)
 
 

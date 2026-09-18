@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api } from "@/src/api";
-import { Button, Card, ChipRow, EmptyState, ErrorState, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
+import { Button, Card, ChipRow, DeleteButton, EmptyState, ErrorState, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
 import { makeStyles, spacing, useTheme } from "@/src/theme";
 
 type Lead = { id: string; name: string; mobile: string; email: string; source: string; interested_service: string; status: string; follow_up_date: string | null; notes: string };
@@ -75,6 +75,15 @@ export default function AdminLeads() {
                     <Text style={{ color: colors.muted, fontSize: 11.5 }}>via {l.source || "—"} · {l.interested_service || "no service"}</Text>
                   </View>
                   <StatusBadge status={l.status} />
+                  <DeleteButton
+                    testID={`delete-lead-${l.id}`}
+                    title={`Delete lead ${l.name}?`}
+                    onConfirm={async () => {
+                      await api(`/admin/leads/${l.id}`, { method: "DELETE" });
+                      qc.invalidateQueries({ queryKey: ["admin-leads"] });
+                      show("Lead deleted", "success");
+                    }}
+                  />
                 </View>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
                   {STATUSES.map((s) => (

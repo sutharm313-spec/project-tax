@@ -1,0 +1,34 @@
+{
+  "summary": "Backend soft-delete feature tested end-to-end across all 5 DELETE endpoints (clients, catalog, payments, requests, leads). 16/16 tests passed. Verified: cascade soft-delete on client (users + businesses + requests + invoices + payments + documents + notifications etc.), catalog/lead/request exclusion from both admin and client lists, payment delete re-locks the linked request (payment_status -> pending, request status -> payment_pending) and marks invoice unpaid, deleted client CANNOT log in (403), total_clients stat decrements by 1, throwaway client used to avoid wiping demo data. RBAC verified: accountant (no admin role) -> 403 on client delete, accountant (no manage_services) -> 403 on catalog/request delete, plain client -> 403 on all 5 DELETEs. Malformed ids -> 404 (global InvalidId handler) on all 5 endpoints. Regression: create_request without a client price still returns 402.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/admin/stats (revenue card)",
+        "issue": "stats.revenue and revenue_by_month filter payments by status=='verified' (admin_api.py:123,151), but the payment verification flow stores status='received' (admin_api.py:401 _apply_payment_status). Result: revenue card and revenue_by_month chart are always 0 for payments that went through the normal verify flow. Not caused by this soft-delete feature but surfaced while asserting revenue delta after payment delete. Suggest: change the filter to status=='received' (or include both) so the delta assertion 'revenue drops by amount' can actually be observed."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_soft_delete.py",
+    "/app/test_reports/pytest/soft_delete_results.xml"
+  ],
+  "action_items": [
+    "Fix stats.revenue to sum payments with status=='received' (or 'received' + 'verified'), so revenue card and revenue_by_month reflect verified payments. Same fix applies to revenue_by_month loop."
+  ],
+  "critical_code_review_comments": [
+    "admin_api.py:151 revenue metric uses status=='verified' but payment verification writes 'received' (admin_api.py:401). Metric silently returns 0 in production. This is pre-existing, not introduced by soft-delete, but hides delete deltas.",
+    "admin_api.py delete endpoints correctly cascade deleted_at to all child collections for clients (line 50) and requests (lines 89-92); ALIVE/_alive() filter is consistently applied on admin GET lists.",
+    "auth.py:140 correctly blocks login for soft-deleted users with 403 'This account is no longer active.'"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_soft_delete.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (skipped per request)"},
+  "seed_data_creation": "Per-test creation of fresh throwaway catalog services, prices, requests, payments and one freshly-registered throwaway client (via /auth/register + verify-otp using OTP_DEV_ECHO). All were soft-deleted at end of tests so the shared demo dataset stays intact.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Use FY strings from FY_LIST (e.g., 'FY 2024-25'), NOT '2024-25'. Payment status after verify is stored as 'received' not 'verified'; be aware when writing revenue/stats assertions. OTP_DEV_ECHO returns dev_otp in register response.",
+  "rca_of_issue": "N/A — all soft-delete requirements verified as correctly implemented."
+}

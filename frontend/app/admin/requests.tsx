@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { api } from "@/src/api";
-import { Button, Card, ChipRow, EmptyState, ErrorState, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
+import { Button, Card, ChipRow, DeleteButton, EmptyState, ErrorState, Input, Sheet, SkeletonList, StatusBadge, useToast } from "@/src/ui";
 import { makeStyles, spacing, useTheme } from "@/src/theme";
 
 type Req = {
@@ -112,6 +112,19 @@ export default function AdminRequests() {
             <Input label="Acknowledgement number" value={ack} onChangeText={setAck} testID="ack-input" />
             <Input label="Filing date (YYYY-MM-DD)" value={filingDate} onChangeText={setFilingDate} testID="filing-date-input" />
             <Button label="Save details" onPress={() => update.mutate({ id: manage!.id, body: { ...(ack ? { acknowledgement_no: ack } : {}), ...(filingDate ? { filing_date: filingDate } : {}) } })} testID="save-filing" />
+            <View style={{ height: 1, backgroundColor: colors.divider, marginVertical: 4 }} />
+            <DeleteButton
+              testID={`delete-request-${manage?.id ?? "x"}`}
+              title="Delete this service request?"
+              message="The request, its invoice, payment and documents will be removed from all lists and totals. Data is retained and can be restored by support."
+              onConfirm={async () => {
+                await api(`/admin/requests/${manage!.id}`, { method: "DELETE" });
+                qc.invalidateQueries({ queryKey: ["admin-requests"] });
+                qc.invalidateQueries({ queryKey: ["admin-stats"] });
+                setManage(null);
+                show("Service request deleted", "success");
+              }}
+            />
           </View>
         </ScrollView>
       </Sheet>

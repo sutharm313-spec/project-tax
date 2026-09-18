@@ -201,6 +201,31 @@ export function StatusBadge({ status, label, testID }: { status: string; label?:
   );
 }
 
+// ---------- delete button with confirm sheet ----------
+export function DeleteButton({ onConfirm, title = "Delete this record?", message = "It will be removed from all lists, counts and totals. Data is retained and can be restored by support if needed.", testID, size = 18 }: {
+  onConfirm: () => Promise<unknown> | unknown; title?: string; message?: string; testID?: string; size?: number;
+}) {
+  const { colors } = useTheme();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <>
+      <Pressable onPress={() => setOpen(true)} testID={testID} hitSlop={10}>
+        <Icon name="trash-outline" size={size} color={colors.error} />
+      </Pressable>
+      <Sheet visible={open} onClose={() => { if (!busy) setOpen(false); }} title={title}>
+        <View style={{ gap: 12, paddingBottom: 20 }}>
+          <Text style={{ color: colors.muted, fontSize: 13.5, lineHeight: 20 }}>{message}</Text>
+          <Button label="Delete" variant="danger" icon="trash" loading={busy} testID={`${testID ?? "delete"}-confirm`}
+            onPress={async () => { setBusy(true); try { await onConfirm(); setOpen(false); } finally { setBusy(false); } }} />
+          <Button label="Cancel" variant="ghost" onPress={() => setOpen(false)} />
+        </View>
+      </Sheet>
+    </>
+  );
+}
+
+
 // ---------- skeleton ----------
 export function Skeleton({ width, height = 16, style, circle }: { width?: DimensionValue; height?: number; style?: ViewStyle; circle?: boolean }) {
   const { colors } = useTheme();
